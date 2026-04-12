@@ -1,6 +1,6 @@
 {
   "name": "@tiktok-fe/ttls-agent-sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "TypeScript SDK for Claude Code CLI",
   "type": "module",
   "main": "./dist/index.js",
