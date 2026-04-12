@@ -56,14 +56,20 @@ describe("Session.run()", () => {
       dangerouslySkipPermissions: true,
     });
 
-    // First turn
-    const first = await session.run("first message");
+    const first = await session.run("__inspect_session_flags__");
     expect(first.sessionId).toBe("test-session-001");
     expect(session.id).toBe("test-session-001");
+    expect(JSON.parse(first.finalResponse)).toEqual({
+      resumeSessionId: null,
+      continueSession: false,
+    });
 
-    // Second turn should use --resume with the captured session ID
-    const second = await session.run("second message");
+    const second = await session.run("__inspect_session_flags__");
     expect(second.sessionId).toBe("test-session-001");
+    expect(JSON.parse(second.finalResponse)).toEqual({
+      resumeSessionId: "test-session-001",
+      continueSession: false,
+    });
   });
 });
 

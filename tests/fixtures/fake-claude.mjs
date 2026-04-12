@@ -10,6 +10,18 @@ const promptIndex = args.indexOf("-p");
 const prompt = promptIndex >= 0 ? args[promptIndex + 1] ?? "" : "";
 const sessionId =
   getArgValue("--resume") ?? getArgValue("--session-id") ?? "test-session-001";
+const inspectPayload = {
+  args,
+  flags: {
+    resumeSessionId: getArgValue("--resume"),
+    continueSession: args.includes("--continue"),
+  },
+  env: {
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? null,
+    INSPECT_CUSTOM_ENV: process.env.INSPECT_CUSTOM_ENV ?? null,
+    INSPECT_INHERITED_ENV: process.env.INSPECT_INHERITED_ENV ?? null,
+  },
+};
 
 // Wait for stdin to close (the SDK closes it immediately in -p mode)
 await waitForStdinClosed();
@@ -17,6 +29,41 @@ await waitForStdinClosed();
 process.on("SIGINT", () => {
   process.exit(130);
 });
+
+// ─── Inspection scenarios (for option tests) ───────────────────────────────
+if (prompt.includes("__inspect_exec_options__")) {
+  emit({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "inspect-exec-options",
+    session_id: sessionId,
+    inspection: inspectPayload,
+    total_cost_usd: 0,
+    duration_ms: 1,
+    duration_api_ms: 1,
+    num_turns: 1,
+    modelUsage: {},
+  });
+  process.exit(0);
+}
+
+if (prompt.includes("__inspect_session_flags__")) {
+  const report = JSON.stringify(inspectPayload.flags);
+
+  emit({
+    type: "system",
+    subtype: "init",
+    session_id: sessionId,
+    model: "claude-sonnet-4-20250514",
+    tools: ["Read"],
+  });
+  emitMessageStart("msg_inspect", sessionId);
+  emitTextDelta("msg_inspect", report, sessionId);
+  emitAssistantText(report, sessionId, "msg_inspect");
+  emitResult(report, sessionId);
+  process.exit(0);
+}
 
 // ─── Error scenario ──────────────────────────────────────────────────────────
 if (prompt.includes("force-error")) {
