@@ -47,7 +47,7 @@ describe("Session.run()", () => {
       dangerouslySkipPermissions: true,
     });
 
-    expect(session.run("force-error")).rejects.toThrow("Something went wrong");
+    await expect(session.run("force-error")).rejects.toThrow("Something went wrong");
   });
 
   test("supports multi-turn via automatic --resume", async () => {
@@ -187,6 +187,6 @@ describe("AbortSignal", () => {
       signal: controller.signal,
     });
 
-    expect(promise).rejects.toThrow();
+    await expect(promise).rejects.toThrow();
   });
 });

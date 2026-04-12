@@ -65,7 +65,6 @@ export class ClaudeCodeExec {
     });
 
     let spawnError: unknown | null = null;
-    child.once("error", (err) => (spawnError = err));
 
     // In -p mode, prompt is passed via the flag; close stdin immediately.
     try {
@@ -81,6 +80,18 @@ export class ClaudeCodeExec {
       });
     }
 
+    const rl = readline.createInterface({
+      input: child.stdout,
+      crlfDelay: Infinity,
+    });
+
+    // If spawn fails (e.g. binary not found), the error event fires
+    // but readline may never close. Force-close it on spawn error.
+    child.once("error", (err) => {
+      spawnError = err;
+      rl.close();
+    });
+
     const exitPromise = new Promise<{
       code: number | null;
       signal: NodeJS.Signals | null;
@@ -88,11 +99,6 @@ export class ClaudeCodeExec {
       child.once("exit", (code, sig) => {
         resolve({ code, signal: sig });
       });
-    });
-
-    const rl = readline.createInterface({
-      input: child.stdout,
-      crlfDelay: Infinity,
     });
 
     try {

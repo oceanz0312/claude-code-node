@@ -1,5 +1,5 @@
 {
-  "name": "@tiktok-fe/claude-sdk",
+  "name": "@tiktok-fe/agent-sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for Claude Code CLI",
   "type": "module",
