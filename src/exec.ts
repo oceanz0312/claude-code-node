@@ -20,6 +20,8 @@ export type ExecArgs = {
   env?: Record<string, string>;
   /** API key. */
   apiKey?: string;
+  /** Auth token. */
+  authToken?: string;
   /** API base URL. */
   baseUrl?: string;
   /** AbortSignal. */
@@ -34,17 +36,20 @@ export class ClaudeCodeExec {
   private cliPath: string;
   private envOverride?: Record<string, string>;
   private apiKey?: string;
+  private authToken?: string;
   private baseUrl?: string;
 
   constructor(
     cliPath?: string,
     env?: Record<string, string>,
     apiKey?: string,
+    authToken?: string,
     baseUrl?: string,
   ) {
     this.cliPath = cliPath ?? DEFAULT_CLI_PATH;
     this.envOverride = env;
     this.apiKey = apiKey;
+    this.authToken = authToken;
     this.baseUrl = baseUrl;
   }
 
@@ -64,11 +69,27 @@ export class ClaudeCodeExec {
         }
       }
     }
-    if (args.apiKey ?? this.apiKey) {
-      env.ANTHROPIC_API_KEY = (args.apiKey ?? this.apiKey)!;
+    const resolvedApiKey = args.apiKey ?? this.apiKey;
+    const resolvedAuthToken = args.authToken ?? this.authToken;
+    const resolvedBaseUrl = args.baseUrl ?? this.baseUrl;
+
+    // When a credential is explicitly configured in the SDK, suppress the
+    // inherited sibling credential to avoid ambiguous auth precedence.
+    if (resolvedApiKey !== undefined && resolvedAuthToken === undefined) {
+      delete env.ANTHROPIC_AUTH_TOKEN;
     }
-    if (args.baseUrl ?? this.baseUrl) {
-      env.ANTHROPIC_BASE_URL = (args.baseUrl ?? this.baseUrl)!;
+    if (resolvedAuthToken !== undefined && resolvedApiKey === undefined) {
+      delete env.ANTHROPIC_API_KEY;
+    }
+
+    if (resolvedApiKey !== undefined) {
+      env.ANTHROPIC_API_KEY = resolvedApiKey;
+    }
+    if (resolvedAuthToken !== undefined) {
+      env.ANTHROPIC_AUTH_TOKEN = resolvedAuthToken;
+    }
+    if (resolvedBaseUrl !== undefined) {
+      env.ANTHROPIC_BASE_URL = resolvedBaseUrl;
     }
 
     let child: ChildProcessWithoutNullStreams;
@@ -105,6 +126,12 @@ export class ClaudeCodeExec {
     if (child.stderr) {
       child.stderr.on("data", (data: Buffer) => {
         stderrChunks.push(data);
+        const chunk = data.toString("utf8");
+        if (chunk) {
+          stderrChain = stderrChain.then(() =>
+            emitRawEvent({ type: "stderr_chunk", chunk }),
+          );
+        }
       });
     }
     const stderrRl = readline.createInterface({
@@ -253,7 +280,7 @@ function buildArgs(args: ExecArgs): string[] {
     }
   }
 
-  if (opts?.tools) {
+  if (opts?.tools != null) {
     cmd.push("--tools", opts.tools);
   }
 
@@ -319,10 +346,10 @@ function buildArgs(args: ExecArgs): string[] {
   }
 
   // --- Settings ---
-  if (opts?.settings) {
+  if (opts?.settings != null) {
     cmd.push("--settings", opts.settings);
   }
-  if (opts?.settingSources) {
+  if (opts?.settingSources != null) {
     cmd.push("--setting-sources", opts.settingSources);
   }
 

@@ -6,8 +6,10 @@ export type ClaudeCodeOptions = {
   cliPath?: string;
   /** Environment variables for the CLI process. When set, process.env is NOT inherited. */
   env?: Record<string, string>;
-  /** API key (passed via ANTHROPIC_API_KEY environment variable). */
+  /** API key sent as the X-Api-Key header (passed via ANTHROPIC_API_KEY). */
   apiKey?: string;
+  /** Auth token sent as the Authorization: Bearer header (passed via ANTHROPIC_AUTH_TOKEN). */
+  authToken?: string;
   /** API base URL (passed via ANTHROPIC_BASE_URL environment variable). */
   baseUrl?: string;
 };
@@ -28,6 +30,7 @@ export type RawClaudeEvent =
   | { type: "spawn"; command: string; args: string[]; cwd?: string }
   | { type: "stdin_closed" }
   | { type: "stdout_line"; line: string }
+  | { type: "stderr_chunk"; chunk: string }
   | { type: "stderr_line"; line: string }
   | { type: "process_error"; error: Error }
   | { type: "exit"; code: number | null; signal: NodeJS.Signals | null };
@@ -117,6 +120,11 @@ export type SessionOptions = {
   debug?: string | boolean;
   /** Debug log output file. */
   debugFile?: string;
+  /**
+   * Write all RawClaudeEvent records as NDJSON into the consumer project's
+   * `logs/` directory. Pass a string to override the target directory.
+   */
+  rawEventLog?: boolean | string;
 };
 
 /** Turn options — passed for each run / runStreamed call. */
@@ -125,4 +133,9 @@ export type TurnOptions = {
   signal?: AbortSignal;
   /** Observe raw Claude CLI process events such as stdout/stderr lines. */
   onRawEvent?: (event: RawClaudeEvent) => void | Promise<void>;
+  /**
+   * Abort the CLI process and surface a synthesized `RelayEvent.error`
+   * as soon as a fatal CLI API error is detected.
+   */
+  failFastOnCliApiError?: boolean;
 };

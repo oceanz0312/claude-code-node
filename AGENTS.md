@@ -2,6 +2,29 @@
 
 本文档面向使用 Claude Code 或其他自动化 agent 参与本仓库开发的协作者，帮助快速理解仓库中的核心“agent / actor”、职责边界以及推荐修改方式。
 
+## 推荐阅读顺序
+
+当你第一次进入本仓库时，建议按下面顺序建立上下文：
+
+1. `README.md`
+2. `docs/README.md`
+3. `docs/architecture.md`
+4. `docs/testing-and-validation.md`
+5. `docs/agent-playbook.md`
+6. `src/index.ts`
+7. `src/options.ts`
+8. `src/exec.ts`
+9. `src/session.ts`
+
+## 文档分工
+
+为避免 README、AGENTS 和补充文档长期漂移，本文件只保留职责边界和修改原则；细节请优先查阅对应文档：
+
+- 架构和执行链路：`docs/architecture.md`
+- 认证参数选型：`docs/authentication.md`
+- 测试、覆盖率与验证命令：`docs/testing-and-validation.md`
+- 自动化 agent 的工作顺序和排障手册：`docs/agent-playbook.md`
+
 ## 仓库目标
 
 本仓库提供一个 TypeScript SDK，用于以编程方式驱动 Claude Code CLI。它的核心职责不是自己实现模型协议，而是：
@@ -165,6 +188,8 @@ type UserInput =
 - `cliPath`
 - `env`
 - `apiKey`
+- `authToken`
+- `baseUrl`
 
 ### 会话配置：`SessionOptions`
 
@@ -175,11 +200,13 @@ type UserInput =
 - MCP / plugin / settings
 - 输出细节
 - worktree / debug / hooks 等运行时行为
+- `rawEventLog`
 
 建议：
 
 - 新增 CLI 参数映射时，先在 `src/options.ts` 增加类型，再在 `src/exec.ts` 的 `buildArgs()` 中补齐转换逻辑
 - 文档更新时同步修改 `README.md`
+- 如果改动涉及执行链路或验证方式，也同步检查 `docs/architecture.md` 和 `docs/testing-and-validation.md`
 
 ## 修改建议
 
@@ -222,6 +249,8 @@ type UserInput =
 
 ## 测试约定
 
+完整说明见 `docs/testing-and-validation.md`。这里仅保留最重要的约束。
+
 测试文件：
 
 - `tests/exec.test.ts`
@@ -235,6 +264,8 @@ type UserInput =
 
 - 任何会影响 CLI 参数拼装、session 恢复、流式事件或错误行为的修改，都应补测试
 - 优先通过 fake CLI 验证参数和事件流，不要在单测里依赖真实 Claude CLI
+- 日常验证优先使用 `bun run check`
+- 发布前或修改构建相关逻辑时使用 `bun run verify`
 
 ## 文档维护约定
 
@@ -262,6 +293,7 @@ type UserInput =
    - 文档是否与代码一致
    - 测试是否覆盖新增行为
    - 是否引入了重复抽象或职责交叉
+5. 如果遇到认证失败、长时间重试或无输出，优先查看 `docs/testing-and-validation.md` 和 `logs/claude-raw-events-*.ndjson`
 
 ## 不建议的做法
 

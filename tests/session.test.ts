@@ -3,11 +3,15 @@ import { ClaudeCode } from "../src/claude-code.js";
 import type { RelayEvent } from "claude-code-parser";
 import type { RawClaudeEvent } from "../src/options.js";
 import path from "node:path";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 const FAKE_CLAUDE = path.resolve(
   import.meta.dirname,
   "fixtures/fake-claude.mjs",
 );
+const STDERR_API_ERROR_PROMPT = "__stderr_api_error__";
+const STDOUT_API_RETRY_AUTH_PROMPT = "__stdout_api_retry_auth__";
 
 function createTestClient(options: ConstructorParameters<typeof ClaudeCode>[0] = {}) {
   return new ClaudeCode({ cliPath: FAKE_CLAUDE, ...options });
@@ -49,6 +53,40 @@ describe("Session.run()", () => {
     });
 
     await expect(session.run("force-error")).rejects.toThrow("Something went wrong");
+  });
+
+  test("can fail fast on fatal CLI API errors written to stderr", async () => {
+    const claude = createTestClient();
+    const session = claude.startSession({
+      dangerouslySkipPermissions: true,
+    });
+
+    const start = Date.now();
+    await expect(
+      session.run(STDERR_API_ERROR_PROMPT, {
+        failFastOnCliApiError: true,
+      }),
+    ).rejects.toThrow("API Error: 502");
+    const durationMs = Date.now() - start;
+
+    expect(durationMs).toBeLessThan(1000);
+  });
+
+  test("can fail fast on fatal CLI api_retry events written to stdout", async () => {
+    const claude = createTestClient();
+    const session = claude.startSession({
+      dangerouslySkipPermissions: true,
+    });
+
+    const start = Date.now();
+    await expect(
+      session.run(STDOUT_API_RETRY_AUTH_PROMPT, {
+        failFastOnCliApiError: true,
+      }),
+    ).rejects.toThrow("authentication_failed");
+    const durationMs = Date.now() - start;
+
+    expect(durationMs).toBeLessThan(1000);
   });
 
   test("supports multi-turn via automatic --resume", async () => {
@@ -133,6 +171,62 @@ describe("Session.runStreamed()", () => {
     expect(hasToolUse).toBe(true);
     expect(hasToolResult).toBe(true);
   });
+
+  test("can surface fatal CLI API stderr as a RelayEvent error", async () => {
+    const claude = createTestClient();
+    const session = claude.startSession({
+      dangerouslySkipPermissions: true,
+    });
+
+    const { events } = await session.runStreamed(STDERR_API_ERROR_PROMPT, {
+      failFastOnCliApiError: true,
+    });
+
+    const start = Date.now();
+    const collected: RelayEvent[] = [];
+    for await (const event of events) {
+      collected.push(event);
+    }
+    const durationMs = Date.now() - start;
+
+    expect(durationMs).toBeLessThan(1000);
+    expect(collected.some((event) => event.type === "error")).toBe(true);
+
+    const errorEvent = collected.find((event) => event.type === "error");
+    expect(errorEvent).toBeDefined();
+    if (errorEvent?.type === "error") {
+      expect(errorEvent.message).toContain("API Error: 502");
+      expect(errorEvent.sessionId).toBe("test-session-001");
+    }
+  });
+
+  test("can surface fatal CLI api_retry stdout events as a RelayEvent error", async () => {
+    const claude = createTestClient();
+    const session = claude.startSession({
+      dangerouslySkipPermissions: true,
+    });
+
+    const { events } = await session.runStreamed(STDOUT_API_RETRY_AUTH_PROMPT, {
+      failFastOnCliApiError: true,
+    });
+
+    const start = Date.now();
+    const collected: RelayEvent[] = [];
+    for await (const event of events) {
+      collected.push(event);
+    }
+    const durationMs = Date.now() - start;
+
+    expect(durationMs).toBeLessThan(1000);
+
+    const errorEvent = collected.find((event) => event.type === "error");
+    expect(errorEvent).toBeDefined();
+    if (errorEvent?.type === "error") {
+      expect(errorEvent.message).toContain("authentication_failed");
+      expect(errorEvent.message).toContain("status 401");
+      expect(errorEvent.sessionId).toBe("test-session-001");
+    }
+  });
 });
 
 describe("Session resumeSession()", () => {
@@ -199,9 +293,10 @@ describe("AbortSignal", () => {
 });
 
 describe("Session global options", () => {
-  test("passes apiKey and baseUrl from ClaudeCodeOptions into the CLI process", async () => {
+  test("passes credentials and baseUrl from ClaudeCodeOptions into the CLI process", async () => {
     const claude = createTestClient({
       apiKey: "global-key",
+      authToken: "global-token",
       baseUrl: "https://global.example.com",
     });
     const session = claude.startSession({
@@ -228,6 +323,7 @@ describe("Session global options", () => {
 
     const inspection = JSON.parse(resultLine!).inspection;
     expect(inspection.env.ANTHROPIC_API_KEY).toBe("global-key");
+    expect(inspection.env.ANTHROPIC_AUTH_TOKEN).toBe("global-token");
     expect(inspection.env.ANTHROPIC_BASE_URL).toBe(
       "https://global.example.com",
     );
@@ -254,5 +350,50 @@ describe("Raw Claude events", () => {
 
     expect(rawEvents.some((event) => event.type === "stdout_line")).toBe(true);
     expect(rawEvents.some((event) => event.type === "stderr_line")).toBe(true);
+  });
+
+  test("writes raw event logs as NDJSON when enabled", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "agent-sdk-raw-events-"));
+
+    try {
+      const claude = createTestClient();
+      const session = claude.startSession({
+        dangerouslySkipPermissions: true,
+        rawEventLog: tempDir,
+      });
+
+      const { events } = await session.runStreamed("__inspect_raw_events__");
+
+      for await (const _event of events) {
+        // consume
+      }
+
+      const files = await readdir(tempDir);
+      expect(files.length).toBe(1);
+
+      const logPath = path.join(tempDir, files[0]!);
+      const logText = await readFile(logPath, "utf8");
+      const records = logText
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as {
+          timestamp: string;
+          event: RawClaudeEvent;
+        });
+
+      expect(records.length).toBeGreaterThan(0);
+      expect(records.every((record) => typeof record.timestamp === "string")).toBe(
+        true,
+      );
+
+      const eventTypes = records.map((record) => record.event.type);
+      expect(eventTypes).toContain("spawn");
+      expect(eventTypes).toContain("stdout_line");
+      expect(eventTypes).toContain("stderr_chunk");
+      expect(eventTypes).toContain("stderr_line");
+      expect(eventTypes).toContain("exit");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });

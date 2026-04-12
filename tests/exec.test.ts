@@ -21,6 +21,7 @@ type Inspection = {
   };
   env: {
     ANTHROPIC_API_KEY: string | null;
+    ANTHROPIC_AUTH_TOKEN: string | null;
     ANTHROPIC_BASE_URL: string | null;
     INSPECT_CUSTOM_ENV: string | null;
     INSPECT_INHERITED_ENV: string | null;
@@ -34,6 +35,7 @@ async function inspectExec(options: {
   continueSession?: boolean;
   images?: string[];
   apiKey?: string;
+  authToken?: string;
   baseUrl?: string;
 } = {}): Promise<Inspection> {
   const exec = options.exec ?? new ClaudeCodeExec(FAKE_CLAUDE);
@@ -47,6 +49,7 @@ async function inspectExec(options: {
     continueSession: options.continueSession,
     images: options.images,
     apiKey: options.apiKey,
+    authToken: options.authToken,
     baseUrl: options.baseUrl,
   })) {
     lines.push(line);
@@ -78,9 +81,13 @@ function hasFlag(args: string[], flag: string): boolean {
 
 describe("ClaudeCodeExec", () => {
   let originalInheritedEnv: string | undefined;
+  let originalAnthropicApiKey: string | undefined;
+  let originalAnthropicAuthToken: string | undefined;
 
   beforeEach(() => {
     originalInheritedEnv = process.env[PARENT_ENV_KEY];
+    originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    originalAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
   });
 
   afterEach(() => {
@@ -88,6 +95,18 @@ describe("ClaudeCodeExec", () => {
       delete process.env[PARENT_ENV_KEY];
     } else {
       process.env[PARENT_ENV_KEY] = originalInheritedEnv;
+    }
+
+    if (originalAnthropicApiKey === undefined) {
+      delete process.env.ANTHROPIC_API_KEY;
+    } else {
+      process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey;
+    }
+
+    if (originalAnthropicAuthToken === undefined) {
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+    } else {
+      process.env.ANTHROPIC_AUTH_TOKEN = originalAnthropicAuthToken;
     }
   });
 
@@ -339,7 +358,7 @@ describe("ClaudeCodeExec", () => {
     expect(result.session_id).toBe("my-session-123");
   });
 
-  test("emits raw process events including stdout and stderr lines", async () => {
+  test("emits raw process events including stdout and stderr chunks/lines", async () => {
     const exec = new ClaudeCodeExec(FAKE_CLAUDE);
     const rawEvents: RawClaudeEvent[] = [];
 
@@ -359,6 +378,7 @@ describe("ClaudeCodeExec", () => {
     expect(eventTypes).toContain("spawn");
     expect(eventTypes).toContain("stdin_closed");
     expect(eventTypes).toContain("stdout_line");
+    expect(eventTypes).toContain("stderr_chunk");
     expect(eventTypes).toContain("stderr_line");
     expect(eventTypes).toContain("exit");
 
@@ -373,6 +393,12 @@ describe("ClaudeCodeExec", () => {
     expect(stdoutLine).toBeDefined();
     if (stdoutLine?.type === "stdout_line") {
       expect(JSON.parse(stdoutLine.line).type).toBe("result");
+    }
+
+    const stderrChunk = rawEvents.find((event) => event.type === "stderr_chunk");
+    expect(stderrChunk).toBeDefined();
+    if (stderrChunk?.type === "stderr_chunk") {
+      expect(stderrChunk.chunk).toBe("raw stderr line\n");
     }
 
     const stderrLine = rawEvents.find((event) => event.type === "stderr_line");
@@ -391,7 +417,7 @@ describe("ClaudeCodeExec", () => {
     expect(lines).toHaveLength(1);
   });
 
-  test("uses explicit env override without inheriting process.env and injects constructor apiKey", async () => {
+  test("uses explicit env override without inheriting process.env and injects constructor credentials", async () => {
     process.env[PARENT_ENV_KEY] = "from-parent";
 
     const exec = new ClaudeCodeExec(
@@ -401,6 +427,7 @@ describe("ClaudeCodeExec", () => {
         PATH: process.env.PATH ?? "",
       },
       "constructor-key",
+      "constructor-token",
       "https://constructor.example.com",
     );
 
@@ -409,26 +436,30 @@ describe("ClaudeCodeExec", () => {
     expect(inspection.env.INSPECT_CUSTOM_ENV).toBe("from-override");
     expect(inspection.env.INSPECT_INHERITED_ENV).toBeNull();
     expect(inspection.env.ANTHROPIC_API_KEY).toBe("constructor-key");
+    expect(inspection.env.ANTHROPIC_AUTH_TOKEN).toBe("constructor-token");
     expect(inspection.env.ANTHROPIC_BASE_URL).toBe(
       "https://constructor.example.com",
     );
   });
 
-  test("allows per-run apiKey and baseUrl to override constructor values", async () => {
+  test("allows per-run credentials and baseUrl to override constructor values", async () => {
     const exec = new ClaudeCodeExec(
       FAKE_CLAUDE,
       undefined,
       "constructor-key",
+      "constructor-token",
       "https://constructor.example.com",
     );
 
     const inspection = await inspectExec({
       exec,
       apiKey: "run-key",
+      authToken: "run-token",
       baseUrl: "https://run.example.com",
     });
 
     expect(inspection.env.ANTHROPIC_API_KEY).toBe("run-key");
+    expect(inspection.env.ANTHROPIC_AUTH_TOKEN).toBe("run-token");
     expect(inspection.env.ANTHROPIC_BASE_URL).toBe("https://run.example.com");
   });
 
@@ -437,17 +468,46 @@ describe("ClaudeCodeExec", () => {
       FAKE_CLAUDE,
       {
         ANTHROPIC_API_KEY: "env-key",
+        ANTHROPIC_AUTH_TOKEN: "env-token",
         ANTHROPIC_BASE_URL: "https://env.example.com",
         PATH: process.env.PATH ?? "",
       },
       "typed-key",
+      "typed-token",
       "https://typed.example.com",
     );
 
     const inspection = await inspectExec({ exec });
 
     expect(inspection.env.ANTHROPIC_API_KEY).toBe("typed-key");
+    expect(inspection.env.ANTHROPIC_AUTH_TOKEN).toBe("typed-token");
     expect(inspection.env.ANTHROPIC_BASE_URL).toBe("https://typed.example.com");
+  });
+
+  test("drops inherited api key when authToken is explicitly configured", async () => {
+    process.env.ANTHROPIC_API_KEY = "parent-api-key";
+
+    const exec = new ClaudeCodeExec(FAKE_CLAUDE);
+    const inspection = await inspectExec({
+      exec,
+      authToken: "run-token",
+    });
+
+    expect(inspection.env.ANTHROPIC_API_KEY).toBeNull();
+    expect(inspection.env.ANTHROPIC_AUTH_TOKEN).toBe("run-token");
+  });
+
+  test("drops inherited auth token when apiKey is explicitly configured", async () => {
+    process.env.ANTHROPIC_AUTH_TOKEN = "parent-auth-token";
+
+    const exec = new ClaudeCodeExec(FAKE_CLAUDE);
+    const inspection = await inspectExec({
+      exec,
+      apiKey: "run-key",
+    });
+
+    expect(inspection.env.ANTHROPIC_API_KEY).toBe("run-key");
+    expect(inspection.env.ANTHROPIC_AUTH_TOKEN).toBeNull();
   });
 
 });

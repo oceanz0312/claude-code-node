@@ -21,6 +21,16 @@
 - 对 Claude Code 的流式事件做二次封装
 - 在已有工程里编排 session、tool use 和输出处理逻辑
 
+## 文档地图
+
+如果你不是只想快速上手，而是准备修改或排查这个仓库，建议直接看这些补充文档：
+
+- [docs/README.md](./docs/README.md)：文档总索引
+- [docs/architecture.md](./docs/architecture.md)：架构、职责边界和执行链路
+- [docs/testing-and-validation.md](./docs/testing-and-validation.md)：测试结构、验证命令和排障建议
+- [docs/agent-playbook.md](./docs/agent-playbook.md)：面向自动化 agent 的工作顺序和常见风险
+- [docs/authentication.md](./docs/authentication.md)：`apiKey` / `authToken` / `baseUrl` 的选型说明
+
 ## 前置要求
 
 - Node.js >= 18
@@ -99,10 +109,15 @@ import { ClaudeCode } from "@tiktok-fe/ttls-agent-sdk";
 // 使用默认配置：直接从 PATH 中查找 claude
 const claude = new ClaudeCode();
 
-// 指定 Claude CLI 路径、API Key 和 API Base URL
+// 指定 Claude CLI 路径，以及直连 Anthropic API 所需的 API Key
 const customClaude = new ClaudeCode({
   cliPath: "/usr/local/bin/claude",
   apiKey: "sk-ant-...",
+});
+
+// 通过网关 / 代理访问时，使用 authToken + baseUrl
+const proxiedClaude = new ClaudeCode({
+  authToken: "token-for-your-gateway",
   baseUrl: "https://your-proxy.example.com",
 });
 
@@ -117,7 +132,20 @@ const isolatedClaude = new ClaudeCode({
 
 ### 2. 创建或恢复会话
 
-`apiKey` 和 `baseUrl` 属于 `ClaudeCodeOptions`，应在创建 `ClaudeCode` 实例时配置；它们不会出现在 `SessionOptions` 中。
+`apiKey` / `authToken` / `baseUrl` 属于 `ClaudeCodeOptions`，应在创建 `ClaudeCode` 实例时配置；它们不会出现在 `SessionOptions` 中。
+
+#### 认证参数怎么选
+
+- `apiKey`：当目标服务要求 `X-Api-Key` 鉴权时使用，典型场景是直连 Anthropic API
+- `authToken`：当目标服务要求 `Authorization: Bearer <token>` 鉴权时使用，典型场景是网关、代理或第三方兼容层
+- `baseUrl`：只负责指定请求发送到哪里，不决定鉴权头类型；应以目标服务文档要求的请求头为准选择 `apiKey` 或 `authToken`
+
+如果你拿不准，先看服务文档或示例请求：
+
+- 写的是 `x-api-key`，就用 `apiKey`
+- 写的是 `Authorization: Bearer ...`，就用 `authToken`
+
+更完整的说明见 [docs/authentication.md](./docs/authentication.md)。
 
 ```typescript
 // 新建会话
@@ -200,6 +228,9 @@ const { events } = await session.runStreamed("Review the current repository", {
       case "stdout_line":
         console.log("[claude raw stdout]", event.line);
         break;
+      case "stderr_chunk":
+        console.error("[claude raw stderr chunk]", event.chunk);
+        break;
       case "stderr_line":
         console.error("[claude raw stderr]", event.line);
         break;
@@ -216,6 +247,45 @@ const { events } = await session.runStreamed("Review the current repository", {
 for await (const event of events) {
   if (event.type === "text_delta") {
     process.stdout.write(event.content);
+  }
+}
+```
+
+如果你希望把完整 `RawClaudeEvent` 落盘到 SDK 使用方项目根目录下的 `logs/` 目录，可以在创建 `Session` 时开启 `rawEventLog`：
+
+```typescript
+const session = claude.startSession({
+  rawEventLog: true,
+});
+
+const { events } = await session.runStreamed("Review the current repository", {
+  failFastOnCliApiError: true,
+});
+```
+
+或者显式指定日志目录：
+
+```typescript
+const session = claude.startSession({
+  rawEventLog: "/path/to/logs",
+});
+
+const { events } = await session.runStreamed("Review the current repository");
+```
+
+当 `rawEventLog` 为 `true` 时，SDK 会写入 `${process.cwd()}/logs/claude-raw-events-*.ndjson`。
+如果你传入字符串，则会把该字符串当作日志目录路径。
+
+如果你希望像 `API Error: 401 ...`、`API Error: 502 ...` 这类写到 `stderr` 的 Claude CLI 致命 API 错误，或者写到 `stdout` 中的 `system/api_retry` 认证失败事件，也走 `RelayEvent.error`，可以开启 `failFastOnCliApiError`：
+
+```typescript
+const { events } = await session.runStreamed("Review the current repository", {
+  failFastOnCliApiError: true,
+});
+
+for await (const event of events) {
+  if (event.type === "error") {
+    console.error("[relay error]", event.message);
   }
 }
 ```
@@ -295,10 +365,15 @@ class ClaudeCode {
 | --- | --- | --- |
 | `cliPath` | `string` | `claude` 可执行文件路径，默认是 `claude` |
 | `env` | `Record<string, string>` | 子进程环境变量。设置后不会继承 `process.env` |
-| `apiKey` | `string` | 会以 `ANTHROPIC_API_KEY` 注入到 Claude CLI 子进程 |
+| `apiKey` | `string` | 会以 `ANTHROPIC_API_KEY` 注入到 Claude CLI 子进程，用于 `X-Api-Key` 鉴权 |
+| `authToken` | `string` | 会以 `ANTHROPIC_AUTH_TOKEN` 注入到 Claude CLI 子进程，用于 `Authorization: Bearer` 鉴权 |
 | `baseUrl` | `string` | 会以 `ANTHROPIC_BASE_URL` 注入到 Claude CLI 子进程 |
 
-如果同时传入 `env` 和顶层的 `apiKey` / `baseUrl`，则顶层字段优先，会覆盖 `env` 中同名环境变量。
+如果同时传入 `env` 和顶层的 `apiKey` / `authToken` / `baseUrl`，则顶层字段优先，会覆盖 `env` 中同名环境变量。
+
+当你显式传入 `apiKey` 或 `authToken` 时，SDK 还会清理继承环境中的另一种凭据，避免子进程同时看到 `ANTHROPIC_API_KEY` 和 `ANTHROPIC_AUTH_TOKEN` 导致鉴权优先级不明确。
+
+认证参数的适用场景与判断方法，见 [docs/authentication.md](./docs/authentication.md)。
 
 ### `Session`
 
@@ -364,6 +439,7 @@ type RawClaudeEvent =
   | { type: "spawn"; command: string; args: string[]; cwd?: string }
   | { type: "stdin_closed" }
   | { type: "stdout_line"; line: string }
+  | { type: "stderr_chunk"; chunk: string }
   | { type: "stderr_line"; line: string }
   | { type: "process_error"; error: Error }
   | { type: "exit"; code: number | null; signal: NodeJS.Signals | null };
@@ -371,6 +447,7 @@ type RawClaudeEvent =
 type TurnOptions = {
   signal?: AbortSignal;
   onRawEvent?: (event: RawClaudeEvent) => void | Promise<void>;
+  failFastOnCliApiError?: boolean;
 };
 ```
 
@@ -378,6 +455,7 @@ type TurnOptions = {
 | --- | --- | --- |
 | `signal` | `AbortSignal` | 用于取消当前 turn |
 | `onRawEvent` | `(event: RawClaudeEvent) => void \| Promise<void>` | 监听底层 Claude CLI 的 spawn / stdout / stderr / exit 原始事件 |
+| `failFastOnCliApiError` | `boolean` | 检测到致命 CLI API 错误时提前中止重试，并合成 `RelayEvent.error`；覆盖 `stderr` 的 `API Error` 以及 `stdout` 的 `system/api_retry` 失败事件 |
 
 ### `Turn`
 
@@ -438,7 +516,7 @@ SDK 从 `claude-code-parser` 重新导出事件类型与解析工具，因此你
 
 ### `SessionOptions`
 
-`SessionOptions` 会映射为 Claude Code CLI 参数，定义于 `src/options.ts`。
+`SessionOptions` 定义于 `src/options.ts`。其中大部分字段会映射为 Claude Code CLI 参数，少数字段是 SDK 自己的运行时增强能力，例如 `rawEventLog`。
 
 #### 常用字段
 
@@ -473,6 +551,7 @@ SDK 从 `claude-code-parser` 重新导出事件类型与解析工具，因此你
 | `excludeDynamicSystemPromptSections` | `boolean` | 排除动态 system prompt 片段 |
 | `debug` | `string \| boolean` | 调试模式 |
 | `debugFile` | `string` | 调试日志输出路径 |
+| `rawEventLog` | `boolean \| string` | 为 `true` 时把完整 RawEvent 以 NDJSON 写入 `${process.cwd()}/logs`；传字符串时写入指定目录 |
 | `worktree` | `string` | 在隔离 worktree 中执行 |
 
 #### 权限模式：`PermissionMode`
@@ -662,6 +741,7 @@ demo/
   index.ts         # 多轮流式交互示例
   skill.ts         # 带固定首轮 prompt 的多轮 skill 示例
   mcp.ts           # MCP / skills 相关示例
+  kimi.ts          # 使用 authToken + baseUrl 自定义 ClaudeCodeOptions 的示例
 
 tests/
   exec.test.ts     # CLI 参数与执行层测试
@@ -674,6 +754,9 @@ tests/
 # 安装依赖
 bun install
 
+# 日常检查
+bun run check
+
 # 构建
 bun run build
 
@@ -683,9 +766,21 @@ bun run typecheck
 # 运行测试
 bun test
 
+# 覆盖率
+bun run test:coverage
+
+# 完整验证
+bun run verify
+
 # 清理产物
 bun run clean
 ```
+
+推荐：
+
+- 日常改动后运行 `bun run check`
+- 修改导出面、构建或发布相关逻辑后运行 `bun run verify`
+- 想确认测试覆盖变化时运行 `bun run test:coverage`
 
 ## 许可证
 

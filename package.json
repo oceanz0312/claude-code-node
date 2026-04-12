@@ -1,6 +1,6 @@
 {
   "name": "@tiktok-fe/ttls-agent-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript SDK for Claude Code CLI",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,8 +18,11 @@
   "scripts": {
     "build": "bun build ./src/index.ts --outdir ./dist --target node --format esm && bun run build:types",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
+    "check": "bun run typecheck && bun test",
     "test": "bun test",
+    "test:coverage": "bun test --coverage",
     "typecheck": "tsc --noEmit",
+    "verify": "bun run clean && bun run build && bun run check",
     "clean": "rm -rf dist"
   },
   "dependencies": {

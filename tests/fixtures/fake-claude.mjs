@@ -19,6 +19,7 @@ const inspectPayload = {
   },
   env: {
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? null,
+    ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN ?? null,
     ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL ?? null,
     INSPECT_CUSTOM_ENV: process.env.INSPECT_CUSTOM_ENV ?? null,
     INSPECT_INHERITED_ENV: process.env.INSPECT_INHERITED_ENV ?? null,
@@ -82,6 +83,43 @@ if (prompt.includes("__inspect_raw_events__")) {
     modelUsage: {},
   });
   process.exit(0);
+}
+
+if (prompt.includes("__stderr_api_error__")) {
+  emit({
+    type: "system",
+    subtype: "init",
+    session_id: sessionId,
+    model: "claude-sonnet-4-20250514",
+    tools: ["Read"],
+  });
+  process.stderr.write(
+    'API Error: 502 {"error":{"message":"proxy failed","type":"proxy_error"}}',
+  );
+  await delay(1500);
+  process.exit(1);
+}
+
+if (prompt.includes("__stdout_api_retry_auth__")) {
+  emit({
+    type: "system",
+    subtype: "init",
+    session_id: sessionId,
+    model: "claude-sonnet-4-20250514",
+    tools: ["Read"],
+  });
+  emit({
+    type: "system",
+    subtype: "api_retry",
+    attempt: 1,
+    max_retries: 10,
+    retry_delay_ms: 600,
+    error_status: 401,
+    error: "authentication_failed",
+    session_id: sessionId,
+  });
+  await delay(1500);
+  process.exit(1);
 }
 
 // ─── Error scenario ──────────────────────────────────────────────────────────
