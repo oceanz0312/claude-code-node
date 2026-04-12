@@ -130,7 +130,9 @@ export class Session {
       cliPath: this._globalOptions.cliPath ?? "claude",
       env: this._globalOptions.env,
       apiKey: this._globalOptions.apiKey,
+      baseUrl: this._globalOptions.baseUrl,
       signal: turnOptions.signal,
+      onRawEvent: turnOptions.onRawEvent,
     });
 
     try {

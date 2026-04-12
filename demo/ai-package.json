@@ -1,0 +1,11 @@
+{
+  "plugin": {
+    "marketing_agent_plugin": {
+      "source": "local",
+      "owner": "zhengdaoyang",
+      "repo": "marketing_agent_plugin",
+      "version": "0.0.3",
+      "gitPath": "."
+    }
+  }
+}

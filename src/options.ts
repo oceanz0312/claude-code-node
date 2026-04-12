@@ -8,6 +8,8 @@ export type ClaudeCodeOptions = {
   env?: Record<string, string>;
   /** API key (passed via ANTHROPIC_API_KEY environment variable). */
   apiKey?: string;
+  /** API base URL (passed via ANTHROPIC_BASE_URL environment variable). */
+  baseUrl?: string;
 };
 
 /** Permission modes supported by Claude Code. */
@@ -20,6 +22,15 @@ export type PermissionMode =
 
 /** Model effort levels. */
 export type Effort = "low" | "medium" | "high" | "max";
+
+/** Raw Claude CLI process events exposed during a turn. */
+export type RawClaudeEvent =
+  | { type: "spawn"; command: string; args: string[]; cwd?: string }
+  | { type: "stdin_closed" }
+  | { type: "stdout_line"; line: string }
+  | { type: "stderr_line"; line: string }
+  | { type: "process_error"; error: Error }
+  | { type: "exit"; code: number | null; signal: NodeJS.Signals | null };
 
 /** Dynamic sub-agent definition. */
 export type AgentDefinition = {
@@ -112,4 +123,6 @@ export type SessionOptions = {
 export type TurnOptions = {
   /** AbortSignal to cancel the turn. */
   signal?: AbortSignal;
+  /** Observe raw Claude CLI process events such as stdout/stderr lines. */
+  onRawEvent?: (event: RawClaudeEvent) => void | Promise<void>;
 };

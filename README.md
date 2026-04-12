@@ -99,10 +99,11 @@ import { ClaudeCode } from "@tiktok-fe/ttls-agent-sdk";
 // 使用默认配置：直接从 PATH 中查找 claude
 const claude = new ClaudeCode();
 
-// 指定 Claude CLI 路径与 API Key
+// 指定 Claude CLI 路径、API Key 和 API Base URL
 const customClaude = new ClaudeCode({
   cliPath: "/usr/local/bin/claude",
   apiKey: "sk-ant-...",
+  baseUrl: "https://your-proxy.example.com",
 });
 
 // 自定义子进程环境变量
@@ -115,6 +116,8 @@ const isolatedClaude = new ClaudeCode({
 ```
 
 ### 2. 创建或恢复会话
+
+`apiKey` 和 `baseUrl` 属于 `ClaudeCodeOptions`，应在创建 `ClaudeCode` 实例时配置；它们不会出现在 `SessionOptions` 中。
 
 ```typescript
 // 新建会话
@@ -181,6 +184,38 @@ for await (const event of events) {
     case "error":
       console.error("[error]", event.message);
       break;
+  }
+}
+```
+
+如果你想观察 `claude -p` 背后的原始输出，也可以通过 `TurnOptions.onRawEvent` 旁路拿到子进程级别的日志：
+
+```typescript
+const { events } = await session.runStreamed("Review the current repository", {
+  onRawEvent(event) {
+    switch (event.type) {
+      case "spawn":
+        console.log("[claude spawn]", event.command, event.args.join(" "));
+        break;
+      case "stdout_line":
+        console.log("[claude raw stdout]", event.line);
+        break;
+      case "stderr_line":
+        console.error("[claude raw stderr]", event.line);
+        break;
+      case "process_error":
+        console.error("[claude process error]", event.error.message);
+        break;
+      case "exit":
+        console.log("[claude exit]", event.code, event.signal);
+        break;
+    }
+  },
+});
+
+for await (const event of events) {
+  if (event.type === "text_delta") {
+    process.stdout.write(event.content);
   }
 }
 ```
@@ -261,6 +296,9 @@ class ClaudeCode {
 | `cliPath` | `string` | `claude` 可执行文件路径，默认是 `claude` |
 | `env` | `Record<string, string>` | 子进程环境变量。设置后不会继承 `process.env` |
 | `apiKey` | `string` | 会以 `ANTHROPIC_API_KEY` 注入到 Claude CLI 子进程 |
+| `baseUrl` | `string` | 会以 `ANTHROPIC_BASE_URL` 注入到 Claude CLI 子进程 |
+
+如果同时传入 `env` 和顶层的 `apiKey` / `baseUrl`，则顶层字段优先，会覆盖 `env` 中同名环境变量。
 
 ### `Session`
 
@@ -322,14 +360,24 @@ type UserInput =
 ### `TurnOptions`
 
 ```typescript
+type RawClaudeEvent =
+  | { type: "spawn"; command: string; args: string[]; cwd?: string }
+  | { type: "stdin_closed" }
+  | { type: "stdout_line"; line: string }
+  | { type: "stderr_line"; line: string }
+  | { type: "process_error"; error: Error }
+  | { type: "exit"; code: number | null; signal: NodeJS.Signals | null };
+
 type TurnOptions = {
   signal?: AbortSignal;
+  onRawEvent?: (event: RawClaudeEvent) => void | Promise<void>;
 };
 ```
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `signal` | `AbortSignal` | 用于取消当前 turn |
+| `onRawEvent` | `(event: RawClaudeEvent) => void \| Promise<void>` | 监听底层 Claude CLI 的 spawn / stdout / stderr / exit 原始事件 |
 
 ### `Turn`
 
@@ -461,7 +509,7 @@ type AgentDefinition = {
 `src/index.ts` 当前导出以下内容：
 
 - 类：`ClaudeCode`, `Session`
-- SDK 类型：`ClaudeCodeOptions`, `SessionOptions`, `PermissionMode`, `Effort`, `AgentDefinition`, `TurnOptions`
+- SDK 类型：`ClaudeCodeOptions`, `SessionOptions`, `PermissionMode`, `Effort`, `RawClaudeEvent`, `AgentDefinition`, `TurnOptions`
 - 会话相关类型：`Input`, `UserInput`, `Turn`, `TurnUsage`, `RunResult`, `StreamedTurn`, `RunStreamedResult`
 - 从 `claude-code-parser` 透出的类型：`RelayEvent` 及其细分事件类型、`ClaudeEvent`、`ClaudeMessage`、`ClaudeContent`、`ModelUsageEntry`
 - 工具方法：`parseLine`, `Translator`, `extractContent`
@@ -502,7 +550,69 @@ for await (const event of events) {
 }
 ```
 
-### 示例 3：跨 turn 保持上下文
+### 示例 3：指定工作目录（`cwd`）
+
+`cwd` 决定 Claude Code 子进程的工作目录——Claude 会把这个目录当作"项目根目录"来读写文件、执行命令。
+
+```typescript
+import { ClaudeCode } from "@tiktok-fe/ttls-agent-sdk";
+
+const claude = new ClaudeCode();
+
+// Claude 会在 /path/to/my-project 目录下工作
+const session = claude.startSession({
+  cwd: "/path/to/my-project",
+  dangerouslySkipPermissions: true,
+});
+
+// Claude 会读取 /path/to/my-project/package.json（而非当前脚本所在目录）
+const turn = await session.run("Read package.json and list all dependencies");
+console.log(turn.finalResponse);
+```
+
+如果你的脚本在 A 目录运行，但想让 Claude 操作 B 目录的代码，就用 `cwd` 指定 B 的路径。不设置时默认使用脚本的当前工作目录。
+
+还可以配合 `additionalDirectories` 让 Claude 同时访问多个目录：
+
+```typescript
+const session = claude.startSession({
+  cwd: "/path/to/main-project",
+  additionalDirectories: ["/path/to/shared-lib", "/path/to/config-repo"],
+  dangerouslySkipPermissions: true,
+});
+```
+
+### 示例 4：加载自定义插件目录（`pluginDir`）
+
+`pluginDir` 用于指定 Claude Code 的插件目录，让 Claude 加载自定义的 slash commands 或 skills。
+
+```typescript
+import { ClaudeCode } from "@tiktok-fe/ttls-agent-sdk";
+
+const claude = new ClaudeCode();
+
+// 加载单个插件目录
+const session = claude.startSession({
+  pluginDir: "/path/to/my-plugins",
+  dangerouslySkipPermissions: true,
+});
+
+// 加载多个插件目录
+const session2 = claude.startSession({
+  pluginDir: [
+    "/path/to/team-plugins",
+    "/path/to/project-plugins",
+  ],
+  dangerouslySkipPermissions: true,
+});
+
+const turn = await session.run("Use my custom skill to analyze the codebase");
+console.log(turn.finalResponse);
+```
+
+插件目录中的 skills/commands 会被 Claude Code 自动发现并注册，之后可以在 prompt 中直接引用。SDK 会按原样把 `bare: true` 和 `pluginDir` 一起透传给 Claude CLI；两者的最终交互行为以 Claude CLI 实际语义为准。
+
+### 示例 5：跨 turn 保持上下文
 
 ```typescript
 const session = claude.startSession({ dangerouslySkipPermissions: true });
@@ -527,9 +637,9 @@ Session
   ↓
 ClaudeCodeExec
   ↓
-claude-code-parser
-  ↓
 claude CLI (--output-format stream-json)
+  ↓
+claude-code-parser
 ```
 
 其中：
@@ -550,6 +660,8 @@ src/
 
 demo/
   index.ts         # 多轮流式交互示例
+  skill.ts         # 带固定首轮 prompt 的多轮 skill 示例
+  mcp.ts           # MCP / skills 相关示例
 
 tests/
   exec.test.ts     # CLI 参数与执行层测试

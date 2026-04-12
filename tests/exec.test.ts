@@ -1,24 +1,27 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import { ClaudeCodeExec } from "../src/exec.js";
-import type { SessionOptions } from "../src/options.js";
+import type { RawClaudeEvent, SessionOptions } from "../src/options.js";
 
 const FAKE_CLAUDE = path.resolve(
   import.meta.dirname,
   "fixtures/fake-claude.mjs",
 );
-
+const TEST_CWD = path.resolve(import.meta.dirname);
 const INSPECT_PROMPT = "__inspect_exec_options__";
+const RAW_EVENTS_PROMPT = "__inspect_raw_events__";
 const PARENT_ENV_KEY = "INSPECT_INHERITED_ENV";
 
 type Inspection = {
   args: string[];
+  cwd: string;
   flags: {
     resumeSessionId: string | null;
     continueSession: boolean;
   };
   env: {
     ANTHROPIC_API_KEY: string | null;
+    ANTHROPIC_BASE_URL: string | null;
     INSPECT_CUSTOM_ENV: string | null;
     INSPECT_INHERITED_ENV: string | null;
   };
@@ -31,6 +34,7 @@ async function inspectExec(options: {
   continueSession?: boolean;
   images?: string[];
   apiKey?: string;
+  baseUrl?: string;
 } = {}): Promise<Inspection> {
   const exec = options.exec ?? new ClaudeCodeExec(FAKE_CLAUDE);
   const lines: string[] = [];
@@ -43,6 +47,7 @@ async function inspectExec(options: {
     continueSession: options.continueSession,
     images: options.images,
     apiKey: options.apiKey,
+    baseUrl: options.baseUrl,
   })) {
     lines.push(line);
   }
@@ -197,7 +202,7 @@ describe("ClaudeCodeExec", () => {
     const inspection = await inspectExec({
       sessionOptions: {
         model: "sonnet",
-        cwd: "/repo/project",
+        cwd: TEST_CWD,
         maxTurns: 7,
         maxBudgetUsd: 1.5,
         appendSystemPrompt: "append this",
@@ -233,7 +238,8 @@ describe("ClaudeCodeExec", () => {
     });
 
     expect(getFlagValues(inspection.args, "--model")).toEqual(["sonnet"]);
-    expect(getFlagValues(inspection.args, "--cd")).toEqual(["/repo/project"]);
+    expect(getFlagValues(inspection.args, "--cd")).toEqual([]);
+    expect(inspection.cwd).toBe(TEST_CWD);
     expect(getFlagValues(inspection.args, "--max-turns")).toEqual(["7"]);
     expect(getFlagValues(inspection.args, "--max-budget-usd")).toEqual([
       "1.5",
@@ -333,6 +339,58 @@ describe("ClaudeCodeExec", () => {
     expect(result.session_id).toBe("my-session-123");
   });
 
+  test("emits raw process events including stdout and stderr lines", async () => {
+    const exec = new ClaudeCodeExec(FAKE_CLAUDE);
+    const rawEvents: RawClaudeEvent[] = [];
+
+    const lines: string[] = [];
+    for await (const line of exec.run({
+      input: RAW_EVENTS_PROMPT,
+      cliPath: FAKE_CLAUDE,
+      sessionOptions: {},
+      onRawEvent: (event) => {
+        rawEvents.push(event);
+      },
+    })) {
+      lines.push(line);
+    }
+
+    const eventTypes = rawEvents.map((event) => event.type);
+    expect(eventTypes).toContain("spawn");
+    expect(eventTypes).toContain("stdin_closed");
+    expect(eventTypes).toContain("stdout_line");
+    expect(eventTypes).toContain("stderr_line");
+    expect(eventTypes).toContain("exit");
+
+    const spawnEvent = rawEvents.find((event) => event.type === "spawn");
+    expect(spawnEvent).toBeDefined();
+    if (spawnEvent?.type === "spawn") {
+      expect(spawnEvent.command).toBe(FAKE_CLAUDE);
+      expect(spawnEvent.args).toContain(RAW_EVENTS_PROMPT);
+    }
+
+    const stdoutLine = rawEvents.find((event) => event.type === "stdout_line");
+    expect(stdoutLine).toBeDefined();
+    if (stdoutLine?.type === "stdout_line") {
+      expect(JSON.parse(stdoutLine.line).type).toBe("result");
+    }
+
+    const stderrLine = rawEvents.find((event) => event.type === "stderr_line");
+    expect(stderrLine).toBeDefined();
+    if (stderrLine?.type === "stderr_line") {
+      expect(stderrLine.line).toBe("raw stderr line");
+    }
+
+    const exitEvent = rawEvents.find((event) => event.type === "exit");
+    expect(exitEvent).toBeDefined();
+    if (exitEvent?.type === "exit") {
+      expect(exitEvent.code).toBe(0);
+      expect(exitEvent.signal).toBeNull();
+    }
+
+    expect(lines).toHaveLength(1);
+  });
+
   test("uses explicit env override without inheriting process.env and injects constructor apiKey", async () => {
     process.env[PARENT_ENV_KEY] = "from-parent";
 
@@ -343,6 +401,7 @@ describe("ClaudeCodeExec", () => {
         PATH: process.env.PATH ?? "",
       },
       "constructor-key",
+      "https://constructor.example.com",
     );
 
     const inspection = await inspectExec({ exec });
@@ -350,32 +409,45 @@ describe("ClaudeCodeExec", () => {
     expect(inspection.env.INSPECT_CUSTOM_ENV).toBe("from-override");
     expect(inspection.env.INSPECT_INHERITED_ENV).toBeNull();
     expect(inspection.env.ANTHROPIC_API_KEY).toBe("constructor-key");
+    expect(inspection.env.ANTHROPIC_BASE_URL).toBe(
+      "https://constructor.example.com",
+    );
   });
 
-  test("allows per-run apiKey to override constructor apiKey", async () => {
-    const exec = new ClaudeCodeExec(FAKE_CLAUDE, undefined, "constructor-key");
+  test("allows per-run apiKey and baseUrl to override constructor values", async () => {
+    const exec = new ClaudeCodeExec(
+      FAKE_CLAUDE,
+      undefined,
+      "constructor-key",
+      "https://constructor.example.com",
+    );
 
     const inspection = await inspectExec({
       exec,
       apiKey: "run-key",
+      baseUrl: "https://run.example.com",
     });
 
     expect(inspection.env.ANTHROPIC_API_KEY).toBe("run-key");
+    expect(inspection.env.ANTHROPIC_BASE_URL).toBe("https://run.example.com");
   });
 
-  test("handles error exit from nonexistent CLI", async () => {
-    const exec = new ClaudeCodeExec("/nonexistent/binary");
+  test("prefers typed options over conflicting env values", async () => {
+    const exec = new ClaudeCodeExec(
+      FAKE_CLAUDE,
+      {
+        ANTHROPIC_API_KEY: "env-key",
+        ANTHROPIC_BASE_URL: "https://env.example.com",
+        PATH: process.env.PATH ?? "",
+      },
+      "typed-key",
+      "https://typed.example.com",
+    );
 
-    const promise = (async () => {
-      for await (const _line of exec.run({
-        input: "test",
-        cliPath: "/nonexistent/binary",
-        sessionOptions: {},
-      })) {
-        // consume
-      }
-    })();
+    const inspection = await inspectExec({ exec });
 
-    await expect(promise).rejects.toThrow();
+    expect(inspection.env.ANTHROPIC_API_KEY).toBe("typed-key");
+    expect(inspection.env.ANTHROPIC_BASE_URL).toBe("https://typed.example.com");
   });
+
 });

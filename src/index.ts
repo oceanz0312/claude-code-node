@@ -8,6 +8,7 @@ export type {
   SessionOptions,
   PermissionMode,
   Effort,
+  RawClaudeEvent,
   AgentDefinition,
   TurnOptions,
 } from "./options.js";
