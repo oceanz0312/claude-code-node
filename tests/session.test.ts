@@ -21,7 +21,7 @@ describe("Session.run()", () => {
 
     const turn = await session.run("hello world");
 
-    expect(turn.finalResponse).toBeTruthy();
+    expect(turn.finalResponse).toBe("Here is my response.");
     expect(turn.events.length).toBeGreaterThan(0);
     expect(turn.sessionId).toBe("test-session-001");
     expect(turn.usage).not.toBeNull();
@@ -104,8 +104,8 @@ describe("Session.runStreamed()", () => {
       }
     }
 
-    // Should have received text deltas
-    expect(textDeltas.length).toBeGreaterThan(0);
+    expect(textDeltas).toEqual(["Here is ", "my response."]);
+    expect(textDeltas.join("")).toBe("Here is my response.");
   });
 
   test("streams tool_use and tool_result events", async () => {
