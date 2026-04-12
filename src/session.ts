@@ -1,5 +1,6 @@
 import { parseLine, Translator } from "claude-code-parser";
 import type {
+  ClaudeEvent,
   RelayEvent,
   TurnCompleteEvent,
   ErrorEvent,
@@ -81,7 +82,7 @@ export class Session {
       events.push(event);
 
       if (event.type === "text_delta") {
-        finalResponse = event.content;
+        finalResponse += event.content;
       } else if (event.type === "turn_complete") {
         const tc = event as TurnCompleteEvent;
         if (tc.sessionId) sessionId = tc.sessionId;
@@ -118,6 +119,7 @@ export class Session {
   ): AsyncGenerator<RelayEvent> {
     const { prompt, images } = normalizeInput(input);
     const translator = new Translator();
+    const streamState = createStreamState();
 
     const generator = this._exec.run({
       input: prompt,
@@ -136,7 +138,7 @@ export class Session {
         const parsed = parseLine(line);
         if (!parsed) continue;
 
-        const relayEvents = translator.translate(parsed);
+        const relayEvents = translateRelayEvents(parsed, translator, streamState);
 
         // Capture session ID from translator state
         if (translator.sessionId && !this._id) {
@@ -174,4 +176,105 @@ function normalizeInput(input: Input): { prompt: string; images: string[] } {
     }
   }
   return { prompt: promptParts.join("\n\n"), images };
+}
+
+type StreamState = {
+  streamedMessageIds: Set<string>;
+};
+
+type RawStreamEventEnvelope = ClaudeEvent & {
+  type: "stream_event";
+  event?: RawStreamEventPayload;
+};
+
+type RawStreamEventPayload = {
+  type?: string;
+  message?: unknown;
+  message_id?: string;
+  delta?: {
+    type?: string;
+    text?: string;
+    thinking?: string;
+  };
+};
+
+function createStreamState(): StreamState {
+  return {
+    streamedMessageIds: new Set<string>(),
+  };
+}
+
+function translateRelayEvents(
+  parsed: ClaudeEvent,
+  translator: Translator,
+  streamState: StreamState,
+): RelayEvent[] {
+  if (isStreamEventEnvelope(parsed)) {
+    return translateStreamEvent(parsed, streamState);
+  }
+
+  const relayEvents = translator.translate(parsed);
+
+  // Claude emits a final assistant snapshot after stream_event deltas.
+  // Keep tool-related events, but suppress duplicate text/thinking output.
+  if (parsed.type === "assistant" && hasStreamedMessage(parsed, streamState)) {
+    return relayEvents.filter(
+      (event) => event.type !== "text_delta" && event.type !== "thinking_delta",
+    );
+  }
+
+  return relayEvents;
+}
+
+function isStreamEventEnvelope(raw: ClaudeEvent): raw is RawStreamEventEnvelope {
+  return raw.type === "stream_event";
+}
+
+function translateStreamEvent(
+  raw: RawStreamEventEnvelope,
+  streamState: StreamState,
+): RelayEvent[] {
+  const event = raw.event;
+  if (!event || event.type !== "content_block_delta" || !event.delta) {
+    return [];
+  }
+
+  const messageId = getStreamEventMessageId(event);
+  const { delta } = event;
+
+  if (delta.type === "text_delta") {
+    if (!delta.text) return [];
+    if (messageId) streamState.streamedMessageIds.add(messageId);
+    return [{ type: "text_delta", content: delta.text }];
+  }
+
+  if (delta.type === "thinking_delta") {
+    const content = delta.thinking ?? delta.text ?? "";
+    if (!content) return [];
+    if (messageId) streamState.streamedMessageIds.add(messageId);
+    return [{ type: "thinking_delta", content }];
+  }
+
+  return [];
+}
+
+function hasStreamedMessage(raw: ClaudeEvent, streamState: StreamState): boolean {
+  const messageId = getMessageId(raw.message);
+  return messageId != null && streamState.streamedMessageIds.has(messageId);
+}
+
+function getStreamEventMessageId(event: RawStreamEventPayload): string | null {
+  if (typeof event.message_id === "string") {
+    return event.message_id;
+  }
+  return getMessageId(event.message);
+}
+
+function getMessageId(message: unknown): string | null {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+
+  const { id } = message as { id?: unknown };
+  return typeof id === "string" ? id : null;
 }
