@@ -19,6 +19,7 @@ export class ClaudeCode {
       options.cliPath,
       options.env,
       options.apiKey,
+      options.baseUrl,
     );
   }
 

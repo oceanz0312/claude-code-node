@@ -12,12 +12,14 @@ const sessionId =
   getArgValue("--resume") ?? getArgValue("--session-id") ?? "test-session-001";
 const inspectPayload = {
   args,
+  cwd: process.cwd(),
   flags: {
     resumeSessionId: getArgValue("--resume"),
     continueSession: args.includes("--continue"),
   },
   env: {
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? null,
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL ?? null,
     INSPECT_CUSTOM_ENV: process.env.INSPECT_CUSTOM_ENV ?? null,
     INSPECT_INHERITED_ENV: process.env.INSPECT_INHERITED_ENV ?? null,
   },
@@ -62,6 +64,23 @@ if (prompt.includes("__inspect_session_flags__")) {
   emitTextDelta("msg_inspect", report, sessionId);
   emitAssistantText(report, sessionId, "msg_inspect");
   emitResult(report, sessionId);
+  process.exit(0);
+}
+
+if (prompt.includes("__inspect_raw_events__")) {
+  process.stderr.write("raw stderr line\n");
+  emit({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "inspect-raw-events",
+    session_id: sessionId,
+    total_cost_usd: 0,
+    duration_ms: 1,
+    duration_api_ms: 1,
+    num_turns: 1,
+    modelUsage: {},
+  });
   process.exit(0);
 }
 

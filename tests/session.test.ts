@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { ClaudeCode } from "../src/claude-code.js";
 import type { RelayEvent } from "claude-code-parser";
+import type { RawClaudeEvent } from "../src/options.js";
 import path from "node:path";
 
 const FAKE_CLAUDE = path.resolve(
@@ -8,8 +9,8 @@ const FAKE_CLAUDE = path.resolve(
   "fixtures/fake-claude.mjs",
 );
 
-function createTestClient() {
-  return new ClaudeCode({ cliPath: FAKE_CLAUDE });
+function createTestClient(options: ConstructorParameters<typeof ClaudeCode>[0] = {}) {
+  return new ClaudeCode({ cliPath: FAKE_CLAUDE, ...options });
 }
 
 describe("Session.run()", () => {
@@ -194,5 +195,64 @@ describe("AbortSignal", () => {
     });
 
     await expect(promise).rejects.toThrow();
+  });
+});
+
+describe("Session global options", () => {
+  test("passes apiKey and baseUrl from ClaudeCodeOptions into the CLI process", async () => {
+    const claude = createTestClient({
+      apiKey: "global-key",
+      baseUrl: "https://global.example.com",
+    });
+    const session = claude.startSession({
+      dangerouslySkipPermissions: true,
+    });
+
+    const rawStdoutLines: string[] = [];
+    const { events } = await session.runStreamed("__inspect_exec_options__", {
+      onRawEvent: (event) => {
+        if (event.type === "stdout_line") {
+          rawStdoutLines.push(event.line);
+        }
+      },
+    });
+
+    for await (const _event of events) {
+      // consume
+    }
+
+    const resultLine = rawStdoutLines.find(
+      (line) => JSON.parse(line).type === "result",
+    );
+    expect(resultLine).toBeDefined();
+
+    const inspection = JSON.parse(resultLine!).inspection;
+    expect(inspection.env.ANTHROPIC_API_KEY).toBe("global-key");
+    expect(inspection.env.ANTHROPIC_BASE_URL).toBe(
+      "https://global.example.com",
+    );
+  });
+});
+
+describe("Raw Claude events", () => {
+  test("forwards TurnOptions.onRawEvent through runStreamed", async () => {
+    const claude = createTestClient();
+    const session = claude.startSession({
+      dangerouslySkipPermissions: true,
+    });
+
+    const rawEvents: RawClaudeEvent[] = [];
+    const { events } = await session.runStreamed("__inspect_raw_events__", {
+      onRawEvent: (event) => {
+        rawEvents.push(event);
+      },
+    });
+
+    for await (const _event of events) {
+      // consume
+    }
+
+    expect(rawEvents.some((event) => event.type === "stdout_line")).toBe(true);
+    expect(rawEvents.some((event) => event.type === "stderr_line")).toBe(true);
   });
 });

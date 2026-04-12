@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
-import type { SessionOptions } from "./options.js";
+import type { RawClaudeEvent, SessionOptions } from "./options.js";
 
 export type ExecArgs = {
   input: string;
@@ -20,8 +20,12 @@ export type ExecArgs = {
   env?: Record<string, string>;
   /** API key. */
   apiKey?: string;
+  /** API base URL. */
+  baseUrl?: string;
   /** AbortSignal. */
   signal?: AbortSignal;
+  /** Observe raw CLI process events. */
+  onRawEvent?: (event: RawClaudeEvent) => void | Promise<void>;
 };
 
 const DEFAULT_CLI_PATH = "claude";
@@ -30,19 +34,25 @@ export class ClaudeCodeExec {
   private cliPath: string;
   private envOverride?: Record<string, string>;
   private apiKey?: string;
+  private baseUrl?: string;
 
   constructor(
     cliPath?: string,
     env?: Record<string, string>,
     apiKey?: string,
+    baseUrl?: string,
   ) {
     this.cliPath = cliPath ?? DEFAULT_CLI_PATH;
     this.envOverride = env;
     this.apiKey = apiKey;
+    this.baseUrl = baseUrl;
   }
 
   async *run(args: ExecArgs): AsyncGenerator<string> {
     const commandArgs = buildArgs(args);
+    const emitRawEvent = async (event: RawClaudeEvent): Promise<void> => {
+      await args.onRawEvent?.(event);
+    };
 
     const env: Record<string, string> = {};
     if (this.envOverride) {
@@ -57,18 +67,36 @@ export class ClaudeCodeExec {
     if (args.apiKey ?? this.apiKey) {
       env.ANTHROPIC_API_KEY = (args.apiKey ?? this.apiKey)!;
     }
+    if (args.baseUrl ?? this.baseUrl) {
+      env.ANTHROPIC_BASE_URL = (args.baseUrl ?? this.baseUrl)!;
+    }
 
-    const child = spawn(args.cliPath ?? this.cliPath, commandArgs, {
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      signal: args.signal,
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(args.cliPath ?? this.cliPath, commandArgs, {
+        cwd: args.sessionOptions?.cwd,
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        signal: args.signal,
+      });
+    } catch (error) {
+      await emitRawEvent({ type: "process_error", error: error as Error });
+      throw error;
+    }
+    await emitRawEvent({
+      type: "spawn",
+      command: args.cliPath ?? this.cliPath,
+      args: commandArgs,
+      cwd: args.sessionOptions?.cwd,
     });
 
     let spawnError: unknown | null = null;
+    let stderrChain = Promise.resolve();
 
     // In -p mode, prompt is passed via the flag; close stdin immediately.
     try {
       child.stdin.end();
+      await emitRawEvent({ type: "stdin_closed" });
     } catch {
       // ignore
     }
@@ -79,6 +107,15 @@ export class ClaudeCodeExec {
         stderrChunks.push(data);
       });
     }
+    const stderrRl = readline.createInterface({
+      input: child.stderr,
+      crlfDelay: Infinity,
+    });
+    stderrRl.on("line", (line) => {
+      stderrChain = stderrChain.then(() =>
+        emitRawEvent({ type: "stderr_line", line }),
+      );
+    });
 
     const rl = readline.createInterface({
       input: child.stdout,
@@ -89,7 +126,11 @@ export class ClaudeCodeExec {
     // but readline may never close. Force-close it on spawn error.
     child.once("error", (err) => {
       spawnError = err;
+      stderrChain = stderrChain.then(() =>
+        emitRawEvent({ type: "process_error", error: err as Error }),
+      );
       rl.close();
+      stderrRl.close();
     });
 
     const exitPromise = new Promise<{
@@ -103,11 +144,14 @@ export class ClaudeCodeExec {
 
     try {
       for await (const line of rl) {
+        await emitRawEvent({ type: "stdout_line", line });
         yield line as string;
       }
 
       if (spawnError) throw spawnError;
       const { code, signal } = await exitPromise;
+      await stderrChain;
+      await emitRawEvent({ type: "exit", code, signal });
       if (code !== 0 || signal) {
         const stderrText = Buffer.concat(stderrChunks).toString("utf8");
         const detail = signal ? `signal ${signal}` : `code ${code ?? 1}`;
@@ -117,6 +161,7 @@ export class ClaudeCodeExec {
       }
     } finally {
       rl.close();
+      stderrRl.close();
       child.removeAllListeners();
       try {
         if (!child.killed) child.kill();
@@ -157,11 +202,6 @@ function buildArgs(args: ExecArgs): string[] {
   // --- Model ---
   if (opts?.model) {
     cmd.push("--model", opts.model);
-  }
-
-  // --- Working directory ---
-  if (opts?.cwd) {
-    cmd.push("--cd", opts.cwd);
   }
 
   // --- Additional directories ---
