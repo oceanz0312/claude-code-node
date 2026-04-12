@@ -5,8 +5,14 @@ import type {
   TurnCompleteEvent,
   ErrorEvent,
 } from "claude-code-parser";
-import type { ClaudeCodeOptions, SessionOptions, TurnOptions } from "./options.js";
+import type {
+  ClaudeCodeOptions,
+  SessionOptions,
+  TurnOptions,
+  RawClaudeEvent,
+} from "./options.js";
 import { ClaudeCodeExec } from "./exec.js";
+import { createRawEventLogger } from "./raw-event-log.js";
 
 // ─── Input types ─────────────────────────────────────────────────────────────
 
@@ -39,6 +45,11 @@ export type StreamedTurn = {
 };
 
 export type RunStreamedResult = StreamedTurn;
+
+type AbortSignalBinding = {
+  signal?: AbortSignal;
+  cleanup: () => void;
+};
 
 // ─── Session ─────────────────────────────────────────────────────────────────
 
@@ -120,6 +131,39 @@ export class Session {
     const { prompt, images } = normalizeInput(input);
     const translator = new Translator();
     const streamState = createStreamState();
+    const rawEventLogger = await createRawEventLogger(this._sessionOptions.rawEventLog);
+    let fatalCliError: string | null = null;
+    let stderrText = "";
+
+    const cliAbortController = turnOptions.failFastOnCliApiError
+      ? new AbortController()
+      : null;
+    const abortSignalBinding = createAbortSignalBinding(
+      turnOptions.signal,
+      cliAbortController?.signal,
+    );
+
+    const onRawEvent = turnOptions.failFastOnCliApiError
+      ? async (event: RawClaudeEvent): Promise<void> => {
+          await rawEventLogger.log(event);
+
+          if (!fatalCliError) {
+            stderrText = appendStderrText(stderrText, event);
+            const detectedError = extractFatalCliApiError(stderrText);
+            if (detectedError) {
+              fatalCliError = detectedError;
+              cliAbortController?.abort();
+            }
+          }
+
+          await turnOptions.onRawEvent?.(event);
+        }
+      : this._sessionOptions.rawEventLog || turnOptions.onRawEvent
+        ? async (event: RawClaudeEvent): Promise<void> => {
+            await rawEventLogger.log(event);
+            await turnOptions.onRawEvent?.(event);
+          }
+        : undefined;
 
     const generator = this._exec.run({
       input: prompt,
@@ -130,15 +174,33 @@ export class Session {
       cliPath: this._globalOptions.cliPath ?? "claude",
       env: this._globalOptions.env,
       apiKey: this._globalOptions.apiKey,
+      authToken: this._globalOptions.authToken,
       baseUrl: this._globalOptions.baseUrl,
-      signal: turnOptions.signal,
-      onRawEvent: turnOptions.onRawEvent,
+      signal: abortSignalBinding.signal,
+      onRawEvent,
     });
 
     try {
       for await (const line of generator) {
         const parsed = parseLine(line);
         if (!parsed) continue;
+
+        if (!fatalCliError && turnOptions.failFastOnCliApiError) {
+          const detectedError = extractFatalCliApiErrorFromStdoutEvent(parsed);
+          if (detectedError) {
+            fatalCliError = detectedError;
+            if (!this._id && typeof parsed.session_id === "string") {
+              this._id = parsed.session_id;
+            }
+            cliAbortController?.abort();
+            yield {
+              type: "error",
+              message: fatalCliError,
+              sessionId: this._id ?? translator.sessionId,
+            };
+            return;
+          }
+        }
 
         const relayEvents = translateRelayEvents(parsed, translator, streamState);
 
@@ -158,7 +220,19 @@ export class Session {
           yield event;
         }
       }
+    } catch (error) {
+      if (fatalCliError) {
+        yield {
+          type: "error",
+          message: fatalCliError,
+          sessionId: this._id ?? translator.sessionId,
+        };
+        return;
+      }
+      throw error;
     } finally {
+      await rawEventLogger.close();
+      abortSignalBinding.cleanup();
       this._hasRun = true;
     }
   }
@@ -205,6 +279,142 @@ function createStreamState(): StreamState {
     streamedMessageIds: new Set<string>(),
   };
 }
+
+function createAbortSignalBinding(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignalBinding {
+  const activeSignals = signals.filter(
+    (signal): signal is AbortSignal => signal != null,
+  );
+
+  if (activeSignals.length === 0) {
+    return { signal: undefined, cleanup: noop };
+  }
+
+  if (activeSignals.length === 1) {
+    return { signal: activeSignals[0], cleanup: noop };
+  }
+
+  const controller = new AbortController();
+  const cleanupFns: Array<() => void> = [];
+
+  const abort = (source: AbortSignal): void => {
+    if (controller.signal.aborted) return;
+
+    const reason = (
+      source as AbortSignal & {
+        reason?: unknown;
+      }
+    ).reason;
+
+    if (reason === undefined) {
+      controller.abort();
+      return;
+    }
+
+    controller.abort(reason);
+  };
+
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abort(signal);
+      return { signal: controller.signal, cleanup: noop };
+    }
+
+    const onAbort = () => abort(signal);
+    signal.addEventListener("abort", onAbort, { once: true });
+    cleanupFns.push(() => signal.removeEventListener("abort", onAbort));
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      for (const cleanup of cleanupFns) {
+        cleanup();
+      }
+    },
+  };
+}
+
+function appendStderrText(
+  stderrText: string,
+  event: RawClaudeEvent,
+): string {
+  if (event.type === "stderr_chunk") {
+    return `${stderrText}${event.chunk}`.slice(-16384);
+  }
+
+  if (event.type === "stderr_line") {
+    return `${stderrText}${event.line}\n`.slice(-16384);
+  }
+
+  return stderrText;
+}
+
+function extractFatalCliApiError(stderrText: string): string | null {
+  const match = /\bAPI Error:/i.exec(stderrText);
+  if (!match) {
+    return null;
+  }
+
+  const tail = stderrText.slice(match.index).trim();
+  if (!tail) {
+    return null;
+  }
+
+  const [firstLine] = tail.split(/\r?\n/, 1);
+  return firstLine?.trim() || tail;
+}
+
+function extractFatalCliApiErrorFromStdoutEvent(
+  parsed: ClaudeEvent,
+): string | null {
+  if (parsed.type !== "system" || parsed.subtype !== "api_retry") {
+    return null;
+  }
+
+  const event = parsed as ClaudeEvent & {
+    attempt?: unknown;
+    max_retries?: unknown;
+    retry_delay_ms?: unknown;
+    error_status?: unknown;
+    error?: unknown;
+  };
+
+  const errorStatus =
+    typeof event.error_status === "number" ? event.error_status : null;
+  const error =
+    typeof event.error === "string" && event.error.trim()
+      ? event.error.trim()
+      : null;
+
+  if (errorStatus == null && error == null) {
+    return null;
+  }
+
+  const parts = ["API retry aborted"];
+  if (errorStatus != null) {
+    parts.push(`status ${errorStatus}`);
+  }
+  if (error) {
+    parts.push(error);
+  }
+
+  if (
+    typeof event.attempt === "number" &&
+    typeof event.max_retries === "number"
+  ) {
+    parts.push(`attempt ${event.attempt}/${event.max_retries}`);
+  }
+
+  if (typeof event.retry_delay_ms === "number") {
+    parts.push(`next retry in ${Math.round(event.retry_delay_ms)}ms`);
+  }
+
+  return parts.join(" | ");
+}
+
+function noop(): void {}
 
 function translateRelayEvents(
   parsed: ClaudeEvent,
