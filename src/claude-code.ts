@@ -14,13 +14,14 @@ export class ClaudeCode {
   private _options: ClaudeCodeOptions;
 
   constructor(options: ClaudeCodeOptions = {}) {
-    this._options = options;
+    const normalizedEnv = mergeClaudeEnv(options);
+    this._options = {
+      ...options,
+      env: normalizedEnv,
+    };
     this._exec = new ClaudeCodeExec(
       options.cliPath,
-      options.env,
-      options.apiKey,
-      options.authToken,
-      options.baseUrl,
+      normalizedEnv,
     );
   }
 
@@ -44,4 +45,24 @@ export class ClaudeCode {
       true,
     );
   }
+}
+
+function mergeClaudeEnv(options: ClaudeCodeOptions): Record<string, string> {
+  const env: Record<string, string> = {
+    ...(options.env ?? {}),
+  };
+
+  if (options.apiKey !== undefined) {
+    env.ANTHROPIC_API_KEY = options.apiKey;
+  }
+
+  if (options.authToken !== undefined) {
+    env.ANTHROPIC_AUTH_TOKEN = options.authToken;
+  }
+
+  if (options.baseUrl !== undefined) {
+    env.ANTHROPIC_BASE_URL = options.baseUrl;
+  }
+
+  return env;
 }

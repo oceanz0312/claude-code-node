@@ -173,9 +173,6 @@ export class Session {
       sessionOptions: this._sessionOptions,
       cliPath: this._globalOptions.cliPath ?? "claude",
       env: this._globalOptions.env,
-      apiKey: this._globalOptions.apiKey,
-      authToken: this._globalOptions.authToken,
-      baseUrl: this._globalOptions.baseUrl,
       signal: abortSignalBinding.signal,
       onRawEvent,
     });

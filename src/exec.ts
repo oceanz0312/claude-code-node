@@ -18,12 +18,6 @@ export type ExecArgs = {
   cliPath: string;
   /** Environment variables for the process. */
   env?: Record<string, string>;
-  /** API key. */
-  apiKey?: string;
-  /** Auth token. */
-  authToken?: string;
-  /** API base URL. */
-  baseUrl?: string;
   /** AbortSignal. */
   signal?: AbortSignal;
   /** Observe raw CLI process events. */
@@ -35,22 +29,13 @@ const DEFAULT_CLI_PATH = "claude";
 export class ClaudeCodeExec {
   private cliPath: string;
   private envOverride?: Record<string, string>;
-  private apiKey?: string;
-  private authToken?: string;
-  private baseUrl?: string;
 
   constructor(
     cliPath?: string,
     env?: Record<string, string>,
-    apiKey?: string,
-    authToken?: string,
-    baseUrl?: string,
   ) {
     this.cliPath = cliPath ?? DEFAULT_CLI_PATH;
     this.envOverride = env;
-    this.apiKey = apiKey;
-    this.authToken = authToken;
-    this.baseUrl = baseUrl;
   }
 
   async *run(args: ExecArgs): AsyncGenerator<string> {
@@ -59,37 +44,13 @@ export class ClaudeCodeExec {
       await args.onRawEvent?.(event);
     };
 
-    const env: Record<string, string> = {};
-    if (this.envOverride) {
-      Object.assign(env, this.envOverride);
-    } else {
-      for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined) {
-          env[key] = value;
-        }
-      }
-    }
-    const resolvedApiKey = args.apiKey ?? this.apiKey;
-    const resolvedAuthToken = args.authToken ?? this.authToken;
-    const resolvedBaseUrl = args.baseUrl ?? this.baseUrl;
+    const env: Record<string, string> = {
+      ...(this.envOverride ?? {}),
+      ...(args.env ?? {}),
+    };
 
-    // When a credential is explicitly configured in the SDK, suppress the
-    // inherited sibling credential to avoid ambiguous auth precedence.
-    if (resolvedApiKey !== undefined && resolvedAuthToken === undefined) {
-      delete env.ANTHROPIC_AUTH_TOKEN;
-    }
-    if (resolvedAuthToken !== undefined && resolvedApiKey === undefined) {
-      delete env.ANTHROPIC_API_KEY;
-    }
-
-    if (resolvedApiKey !== undefined) {
-      env.ANTHROPIC_API_KEY = resolvedApiKey;
-    }
-    if (resolvedAuthToken !== undefined) {
-      env.ANTHROPIC_AUTH_TOKEN = resolvedAuthToken;
-    }
-    if (resolvedBaseUrl !== undefined) {
-      env.ANTHROPIC_BASE_URL = resolvedBaseUrl;
+    if (env.PATH === undefined && process.env.PATH !== undefined) {
+      env.PATH = process.env.PATH;
     }
 
     let child: ChildProcessWithoutNullStreams;
@@ -349,9 +310,8 @@ function buildArgs(args: ExecArgs): string[] {
   if (opts?.settings != null) {
     cmd.push("--settings", opts.settings);
   }
-  if (opts?.settingSources != null) {
-    cmd.push("--setting-sources", opts.settingSources);
-  }
+  const settingSources = opts?.settingSources ?? "";
+  cmd.push("--setting-sources", settingSources);
 
   // --- Hook events ---
   if (opts?.includeHookEvents) {

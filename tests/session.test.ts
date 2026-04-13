@@ -293,7 +293,7 @@ describe("AbortSignal", () => {
 });
 
 describe("Session global options", () => {
-  test("passes credentials and baseUrl from ClaudeCodeOptions into the CLI process", async () => {
+  test("passes only explicit env from ClaudeCodeOptions into the CLI process", async () => {
     const claude = createTestClient({
       apiKey: "global-key",
       authToken: "global-token",

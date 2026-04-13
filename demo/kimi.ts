@@ -1,6 +1,6 @@
 import { ClaudeCode } from "../src/index.js";
 
-const authToken = process.env.KIMI_API_KEY;
+const authToken = "sk-kimi-SdeumX8pBP6fNHfoYZSUB1iY74nXtT8yUq1UXvfXAfBlhPhI1uRURAu4jguhid5u";
 const baseUrl = "https://api.kimi.com/coding/";
 
 if (!authToken) {
