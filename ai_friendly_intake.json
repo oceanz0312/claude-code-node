@@ -1,8 +1,3 @@
 {
-  "target_path": ".",
-  "evaluation_goal": "",
-  "output_path": "",
-  "project_role_preference": "auto",
-  "report_language": "chinese",
-  "notes": "评估 https://code.byted.org/tiktok/agent-sdk 仓库的 AI 友好性"
+  "target_path": "."
 }
