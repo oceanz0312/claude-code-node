@@ -30,6 +30,7 @@
 - [docs/testing-and-validation.md](./docs/testing-and-validation.md)：测试结构、验证命令和排障建议
 - [docs/agent-playbook.md](./docs/agent-playbook.md)：面向自动化 agent 的工作顺序和常见风险
 - [docs/authentication.md](./docs/authentication.md)：`apiKey` / `authToken` / `baseUrl` 的选型说明
+- [docs/pitfalls.md](./docs/pitfalls.md)：已确认的重大闭坑指南
 
 ## 前置要求
 
@@ -544,7 +545,7 @@ SDK 从 `claude-code-parser` 重新导出事件类型与解析工具，因此你
 | `agent` | `string` | 指定当前 agent |
 | `name` | `string` | 会话显示名 |
 | `settings` | `string` | 额外 settings 文件路径或 JSON 字符串 |
-| `settingSources` | `string` | 设置来源 |
+| `settingSources` | `string` | 设置来源，默认为 `""`（不加载任何 user/project/local 设置）。如需加载可传 `"user,project,local"` |
 | `includeHookEvents` | `boolean` | 输出 hook 生命周期事件 |
 | `disableSlashCommands` | `boolean` | 禁用 slash commands |
 | `pluginDir` | `string \| string[]` | 插件目录 |
@@ -747,6 +748,10 @@ tests/
   exec.test.ts     # CLI 参数与执行层测试
   session.test.ts  # Session 行为测试
 ```
+
+## 闭坑指南
+
+重大踩坑记录已单独整理到 [docs/pitfalls.md](./docs/pitfalls.md)，避免 README 和排障文档长期重复维护。
 
 ## 开发
 
