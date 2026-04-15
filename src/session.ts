@@ -41,7 +41,7 @@ export type Turn = {
 export type RunResult = Turn;
 
 export type StreamedTurn = {
-  events: AsyncGenerator<RelayEvent>;
+  events: AsyncIterable<RelayEvent>;
 };
 
 export type RunStreamedResult = StreamedTurn;
@@ -50,6 +50,70 @@ type AbortSignalBinding = {
   signal?: AbortSignal;
   cleanup: () => void;
 };
+
+// ─── Event Channel ──────────────────────────────────────────────────────────
+
+type EventChannel<T> = AsyncIterable<T> & {
+  push(value: T): void;
+  end(): void;
+  error(err: Error): void;
+};
+
+function createEventChannel<T>(): EventChannel<T> {
+  const buffer: T[] = [];
+  let waiting: {
+    resolve: (result: IteratorResult<T>) => void;
+    reject: (err: Error) => void;
+  } | null = null;
+  let done = false;
+  let pendingError: Error | null = null;
+
+  return {
+    push(value: T) {
+      if (waiting) {
+        const { resolve } = waiting;
+        waiting = null;
+        resolve({ value, done: false });
+      } else {
+        buffer.push(value);
+      }
+    },
+    end() {
+      done = true;
+      if (waiting) {
+        const { resolve } = waiting;
+        waiting = null;
+        resolve({ value: undefined as T, done: true });
+      }
+    },
+    error(err: Error) {
+      pendingError = err;
+      if (waiting) {
+        const { reject } = waiting;
+        waiting = null;
+        reject(err);
+      }
+    },
+    [Symbol.asyncIterator](): AsyncIterator<T> {
+      return {
+        next(): Promise<IteratorResult<T>> {
+          if (buffer.length > 0) {
+            return Promise.resolve({ value: buffer.shift()!, done: false });
+          }
+          if (pendingError) {
+            return Promise.reject(pendingError);
+          }
+          if (done) {
+            return Promise.resolve({ value: undefined as T, done: true });
+          }
+          return new Promise((resolve, reject) => {
+            waiting = { resolve, reject };
+          });
+        },
+      };
+    },
+  };
+}
 
 // ─── Session ─────────────────────────────────────────────────────────────────
 
@@ -83,13 +147,13 @@ export class Session {
 
   /** Execute a turn and return the completed result. */
   async run(input: Input, turnOptions: TurnOptions = {}): Promise<Turn> {
-    const generator = this._runStreamedInternal(input, turnOptions);
     const events: RelayEvent[] = [];
     let finalResponse = "";
     let usage: TurnUsage | null = null;
     let sessionId: string | null = this._id;
+    let streamError: ErrorEvent | null = null;
 
-    for await (const event of generator) {
+    await this._processStream(input, turnOptions, (event) => {
       events.push(event);
 
       if (event.type === "text_delta") {
@@ -103,14 +167,14 @@ export class Session {
           outputTokens: tc.outputTokens,
           contextWindow: tc.contextWindow,
         };
-      } else if (event.type === "session_meta") {
-        // session_meta doesn't carry sessionId in RelayEvent,
-        // but translator.sessionId captures it
       } else if (event.type === "error") {
-        const err = event as ErrorEvent;
-        if (err.sessionId) sessionId = err.sessionId;
-        throw new Error(err.message);
+        streamError = event as ErrorEvent;
+        if (streamError.sessionId) sessionId = streamError.sessionId;
       }
+    });
+
+    if (streamError) {
+      throw new Error((streamError as ErrorEvent).message);
     }
 
     return { events, finalResponse, usage, sessionId };
@@ -121,13 +185,24 @@ export class Session {
     input: Input,
     turnOptions: TurnOptions = {},
   ): Promise<StreamedTurn> {
-    return { events: this._runStreamedInternal(input, turnOptions) };
+    const channel = createEventChannel<RelayEvent>();
+
+    this._processStream(input, turnOptions, (event) => {
+      channel.push(event);
+    })
+      .then(() => channel.end())
+      .catch((err) =>
+        channel.error(err instanceof Error ? err : new Error(String(err))),
+      );
+
+    return { events: channel };
   }
 
-  private async *_runStreamedInternal(
+  private async _processStream(
     input: Input,
-    turnOptions: TurnOptions = {},
-  ): AsyncGenerator<RelayEvent> {
+    turnOptions: TurnOptions,
+    onEvent: (event: RelayEvent) => void,
+  ): Promise<void> {
     const { prompt, images } = normalizeInput(input);
     const translator = new Translator();
     const streamState = createStreamState();
@@ -144,9 +219,7 @@ export class Session {
     );
 
     const onRawEvent = turnOptions.failFastOnCliApiError
-      ? async (event: RawClaudeEvent): Promise<void> => {
-          await rawEventLogger.log(event);
-
+      ? (event: RawClaudeEvent): void => {
           if (!fatalCliError) {
             stderrText = appendStderrText(stderrText, event);
             const detectedError = extractFatalCliApiError(stderrText);
@@ -156,77 +229,67 @@ export class Session {
             }
           }
 
-          await turnOptions.onRawEvent?.(event);
+          turnOptions.onRawEvent?.(event);
         }
-      : this._sessionOptions.rawEventLog || turnOptions.onRawEvent
-        ? async (event: RawClaudeEvent): Promise<void> => {
-            await rawEventLogger.log(event);
-            await turnOptions.onRawEvent?.(event);
-          }
-        : undefined;
-
-    const generator = this._exec.run({
-      input: prompt,
-      images: images.length > 0 ? images : undefined,
-      resumeSessionId: this._hasRun ? this._id : (this._id && !this._continueMode ? this._id : null),
-      continueSession: !this._hasRun && this._continueMode,
-      sessionOptions: this._sessionOptions,
-      cliPath: this._globalOptions.cliPath ?? "claude",
-      env: this._globalOptions.env,
-      apiKey: this._globalOptions.apiKey,
-      authToken: this._globalOptions.authToken,
-      baseUrl: this._globalOptions.baseUrl,
-      signal: abortSignalBinding.signal,
-      onRawEvent,
-    });
+      : turnOptions.onRawEvent;
 
     try {
-      for await (const line of generator) {
-        const parsed = parseLine(line);
-        if (!parsed) continue;
+      await this._exec.run({
+        input: prompt,
+        images: images.length > 0 ? images : undefined,
+        resumeSessionId: this._hasRun ? this._id : (this._id && !this._continueMode ? this._id : null),
+        continueSession: !this._hasRun && this._continueMode,
+        sessionOptions: this._sessionOptions,
+        cliPath: this._globalOptions.cliPath ?? "claude",
+        env: this._globalOptions.env,
+        signal: abortSignalBinding.signal,
+        rawEventLogger,
+        onRawEvent,
+        onLine: (line) => {
+          const parsed = parseLine(line);
+          if (!parsed) return;
 
-        if (!fatalCliError && turnOptions.failFastOnCliApiError) {
-          const detectedError = extractFatalCliApiErrorFromStdoutEvent(parsed);
-          if (detectedError) {
-            fatalCliError = detectedError;
-            if (!this._id && typeof parsed.session_id === "string") {
-              this._id = parsed.session_id;
-            }
-            cliAbortController?.abort();
-            yield {
-              type: "error",
-              message: fatalCliError,
-              sessionId: this._id ?? translator.sessionId,
-            };
-            return;
-          }
-        }
-
-        const relayEvents = translateRelayEvents(parsed, translator, streamState);
-
-        // Capture session ID from translator state
-        if (translator.sessionId && !this._id) {
-          this._id = translator.sessionId;
-        }
-
-        for (const event of relayEvents) {
-          // Also capture sessionId from turn_complete
-          if (event.type === "turn_complete") {
-            const tc = event as TurnCompleteEvent;
-            if (tc.sessionId && !this._id) {
-              this._id = tc.sessionId;
+          if (!fatalCliError && turnOptions.failFastOnCliApiError) {
+            const detectedError = extractFatalCliApiErrorFromStdoutEvent(parsed);
+            if (detectedError) {
+              fatalCliError = detectedError;
+              if (!this._id && typeof parsed.session_id === "string") {
+                this._id = parsed.session_id;
+              }
+              cliAbortController?.abort();
+              onEvent({
+                type: "error",
+                message: fatalCliError,
+                sessionId: this._id ?? translator.sessionId,
+              } as ErrorEvent);
+              return;
             }
           }
-          yield event;
-        }
-      }
+
+          const relayEvents = translateRelayEvents(parsed, translator, streamState);
+
+          if (translator.sessionId && !this._id) {
+            this._id = translator.sessionId;
+          }
+
+          for (const event of relayEvents) {
+            if (event.type === "turn_complete") {
+              const tc = event as TurnCompleteEvent;
+              if (tc.sessionId && !this._id) {
+                this._id = tc.sessionId;
+              }
+            }
+            onEvent(event);
+          }
+        },
+      });
     } catch (error) {
       if (fatalCliError) {
-        yield {
+        onEvent({
           type: "error",
           message: fatalCliError,
           sessionId: this._id ?? translator.sessionId,
-        };
+        } as ErrorEvent);
         return;
       }
       throw error;
