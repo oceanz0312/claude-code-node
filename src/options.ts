@@ -4,13 +4,13 @@
 export type ClaudeCodeOptions = {
   /** Path to the `claude` CLI binary. Defaults to "claude" (resolved from PATH). */
   cliPath?: string;
-  /** Environment variables for the CLI process. When set, process.env is NOT inherited. */
+  /** Environment variables for the CLI process. The SDK never inherits process.env implicitly. */
   env?: Record<string, string>;
-  /** API key sent as the X-Api-Key header (passed via ANTHROPIC_API_KEY). */
+  /** API key merged into env as ANTHROPIC_API_KEY when provided. */
   apiKey?: string;
-  /** Auth token sent as the Authorization: Bearer header (passed via ANTHROPIC_AUTH_TOKEN). */
+  /** Auth token merged into env as ANTHROPIC_AUTH_TOKEN when provided. */
   authToken?: string;
-  /** API base URL (passed via ANTHROPIC_BASE_URL environment variable). */
+  /** API base URL merged into env as ANTHROPIC_BASE_URL when provided. */
   baseUrl?: string;
 };
 
@@ -98,7 +98,7 @@ export type SessionOptions = {
   name?: string;
   /** Additional settings file path or JSON string. */
   settings?: string;
-  /** Setting sources (e.g. "user,project,local"). */
+  /** Setting sources (e.g. "user,project,local"). Defaults to "" (none). */
   settingSources?: string;
   /** Enable verbose output. Defaults to true. */
   verbose?: boolean;
@@ -132,7 +132,7 @@ export type TurnOptions = {
   /** AbortSignal to cancel the turn. */
   signal?: AbortSignal;
   /** Observe raw Claude CLI process events such as stdout/stderr lines. */
-  onRawEvent?: (event: RawClaudeEvent) => void | Promise<void>;
+  onRawEvent?: (event: RawClaudeEvent) => void;
   /**
    * Abort the CLI process and surface a synthesized `RelayEvent.error`
    * as soon as a fatal CLI API error is detected.
