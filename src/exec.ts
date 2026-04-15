@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createRequire } from "node:module";
 import readline from "node:readline";
 import type { RawClaudeEvent, SessionOptions } from "./options.js";
+import type { RawEventLogger } from "./raw-event-log.js";
 
 export type ExecArgs = {
   input: string;
@@ -18,78 +20,55 @@ export type ExecArgs = {
   cliPath: string;
   /** Environment variables for the process. */
   env?: Record<string, string>;
-  /** API key. */
-  apiKey?: string;
-  /** Auth token. */
-  authToken?: string;
-  /** API base URL. */
-  baseUrl?: string;
   /** AbortSignal. */
   signal?: AbortSignal;
+  /** Sync raw event logger — writes to disk without blocking the stream. */
+  rawEventLogger?: RawEventLogger;
   /** Observe raw CLI process events. */
-  onRawEvent?: (event: RawClaudeEvent) => void | Promise<void>;
+  onRawEvent?: (event: RawClaudeEvent) => void;
+  /** Called for each stdout line from the CLI process. */
+  onLine: (line: string) => void;
 };
 
-const DEFAULT_CLI_PATH = "claude";
+const require = createRequire(import.meta.url);
+
+function resolveDefaultCliPath(): string {
+  try {
+    return require.resolve("@anthropic-ai/claude-code/cli.js");
+  } catch {
+    return "claude";
+  }
+}
+
+const DEFAULT_CLI_PATH = resolveDefaultCliPath();
 
 export class ClaudeCodeExec {
   private cliPath: string;
   private envOverride?: Record<string, string>;
-  private apiKey?: string;
-  private authToken?: string;
-  private baseUrl?: string;
 
   constructor(
     cliPath?: string,
     env?: Record<string, string>,
-    apiKey?: string,
-    authToken?: string,
-    baseUrl?: string,
   ) {
     this.cliPath = cliPath ?? DEFAULT_CLI_PATH;
     this.envOverride = env;
-    this.apiKey = apiKey;
-    this.authToken = authToken;
-    this.baseUrl = baseUrl;
   }
 
-  async *run(args: ExecArgs): AsyncGenerator<string> {
+  async run(args: ExecArgs): Promise<void> {
     const commandArgs = buildArgs(args);
-    const emitRawEvent = async (event: RawClaudeEvent): Promise<void> => {
-      await args.onRawEvent?.(event);
+    const logger = args.rawEventLogger;
+    const emitRawEvent = (event: RawClaudeEvent): void => {
+      logger?.log(event);
+      args.onRawEvent?.(event);
     };
 
-    const env: Record<string, string> = {};
-    if (this.envOverride) {
-      Object.assign(env, this.envOverride);
-    } else {
-      for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined) {
-          env[key] = value;
-        }
-      }
-    }
-    const resolvedApiKey = args.apiKey ?? this.apiKey;
-    const resolvedAuthToken = args.authToken ?? this.authToken;
-    const resolvedBaseUrl = args.baseUrl ?? this.baseUrl;
+    const env: Record<string, string> = {
+      ...(this.envOverride ?? {}),
+      ...(args.env ?? {}),
+    };
 
-    // When a credential is explicitly configured in the SDK, suppress the
-    // inherited sibling credential to avoid ambiguous auth precedence.
-    if (resolvedApiKey !== undefined && resolvedAuthToken === undefined) {
-      delete env.ANTHROPIC_AUTH_TOKEN;
-    }
-    if (resolvedAuthToken !== undefined && resolvedApiKey === undefined) {
-      delete env.ANTHROPIC_API_KEY;
-    }
-
-    if (resolvedApiKey !== undefined) {
-      env.ANTHROPIC_API_KEY = resolvedApiKey;
-    }
-    if (resolvedAuthToken !== undefined) {
-      env.ANTHROPIC_AUTH_TOKEN = resolvedAuthToken;
-    }
-    if (resolvedBaseUrl !== undefined) {
-      env.ANTHROPIC_BASE_URL = resolvedBaseUrl;
+    if (env.PATH === undefined && process.env.PATH !== undefined) {
+      env.PATH = process.env.PATH;
     }
 
     let child: ChildProcessWithoutNullStreams;
@@ -101,10 +80,10 @@ export class ClaudeCodeExec {
         signal: args.signal,
       });
     } catch (error) {
-      await emitRawEvent({ type: "process_error", error: error as Error });
+      emitRawEvent({ type: "process_error", error: error as Error });
       throw error;
     }
-    await emitRawEvent({
+    emitRawEvent({
       type: "spawn",
       command: args.cliPath ?? this.cliPath,
       args: commandArgs,
@@ -117,7 +96,7 @@ export class ClaudeCodeExec {
     // In -p mode, prompt is passed via the flag; close stdin immediately.
     try {
       child.stdin.end();
-      await emitRawEvent({ type: "stdin_closed" });
+      emitRawEvent({ type: "stdin_closed" });
     } catch {
       // ignore
     }
@@ -171,14 +150,14 @@ export class ClaudeCodeExec {
 
     try {
       for await (const line of rl) {
-        await emitRawEvent({ type: "stdout_line", line });
-        yield line as string;
+        emitRawEvent({ type: "stdout_line", line });
+        args.onLine(line);
       }
 
       if (spawnError) throw spawnError;
       const { code, signal } = await exitPromise;
       await stderrChain;
-      await emitRawEvent({ type: "exit", code, signal });
+      emitRawEvent({ type: "exit", code, signal });
       if (code !== 0 || signal) {
         const stderrText = Buffer.concat(stderrChunks).toString("utf8");
         const detail = signal ? `signal ${signal}` : `code ${code ?? 1}`;
@@ -349,9 +328,8 @@ function buildArgs(args: ExecArgs): string[] {
   if (opts?.settings != null) {
     cmd.push("--settings", opts.settings);
   }
-  if (opts?.settingSources != null) {
-    cmd.push("--setting-sources", opts.settingSources);
-  }
+  const settingSources = opts?.settingSources ?? "";
+  cmd.push("--setting-sources", settingSources);
 
   // --- Hook events ---
   if (opts?.includeHookEvents) {

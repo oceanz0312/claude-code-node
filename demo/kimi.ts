@@ -1,7 +1,10 @@
 import { ClaudeCode } from "../src/index.js";
 
-const authToken = process.env.KIMI_API_KEY;
-const baseUrl = "https://api.kimi.com/coding/";
+// const authToken = "sk-kimi-SdeumX8pBP6fNHfoYZSUB1iY74nXtT8yUq1UXvfXAfBlhPhI1uRURAu4jguhid5u";
+// const baseUrl = "https://api.kimi.com/coding/";
+
+const authToken = "6f8746e2-2b65-497a-8a73-79772d06d401";
+const baseUrl = "https://ark-cn-beijing.bytedance.net/api/v3";
 
 if (!authToken) {
   throw new Error(
@@ -15,6 +18,7 @@ const claude = new ClaudeCode({
 });
 
 const session = claude.startSession({
+  model: "ep-20250827194109-gmcjr",
   cwd: import.meta.dirname,
   dangerouslySkipPermissions: true,
   rawEventLog: true,
