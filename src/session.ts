@@ -231,17 +231,17 @@ export class Session {
 
     const onRawEvent = turnOptions.failFastOnCliApiError
       ? (event: RawClaudeEvent): void => {
-          if (!fatalCliError) {
-            stderrText = appendStderrText(stderrText, event);
-            const detectedError = extractFatalCliApiError(stderrText);
-            if (detectedError) {
-              fatalCliError = detectedError;
-              cliAbortController?.abort();
-            }
+        if (!fatalCliError) {
+          stderrText = appendStderrText(stderrText, event);
+          const detectedError = extractFatalCliApiError(stderrText);
+          if (detectedError) {
+            fatalCliError = detectedError;
+            cliAbortController?.abort();
           }
-
-          turnOptions.onRawEvent?.(event);
         }
+
+        turnOptions.onRawEvent?.(event);
+      }
       : turnOptions.onRawEvent;
 
     try {
@@ -526,7 +526,7 @@ function extractFatalCliApiErrorFromStdoutEvent(
   return parts.join(" | ");
 }
 
-function noop(): void {}
+function noop(): void { }
 
 function translateRelayEvents(
   parsed: ClaudeEvent,
