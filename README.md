@@ -9,7 +9,7 @@
 
 `claude-code-node` wraps the Claude Code CLI into a clean async API, providing session management, multi-turn conversations, streaming events, tool-use results, and structured output — ideal for scripts, services, and automation pipelines.
 
-[中文文档](./README.zh-CN.md)
+[中文文档](./README.zh-CN.md) | [Why claude-code-node?](./docs/why/README.md)
 
 ---
 

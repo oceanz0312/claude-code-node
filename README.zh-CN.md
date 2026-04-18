@@ -9,7 +9,7 @@
 
 `claude-code-node` 将 Claude Code CLI 封装为清晰的异步 API，提供会话管理、多轮对话、流式事件、工具调用结果和结构化输出能力，适用于脚本、服务端程序和自动化流程。
 
-[English Documentation](./README.md)
+[English Documentation](./README.md) | [为什么选择 claude-code-node？](./docs/why/README.zh-CN.md)
 
 ---
 

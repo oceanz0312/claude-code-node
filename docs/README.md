@@ -4,6 +4,8 @@
 
 ## 快速导航
 
+- [why/](./why/)
+  为什么选择 claude-code-node？基于 9 个竞品项目的横向对比分析（中英双语）。
 - [authentication.md](./authentication.md)
   认证参数说明。解释 `apiKey`、`authToken`、`baseUrl` 的职责和选型。
 - [architecture.md](./architecture.md)

@@ -5,3 +5,4 @@ logs/
 .DS_Store
 tests/e2e/artifacts/
 .env.ts
+agent_logs/
