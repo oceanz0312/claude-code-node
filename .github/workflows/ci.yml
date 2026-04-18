@@ -8,9 +8,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      E2E_AUTH_TOKEN: ${{ secrets.E2E_AUTH_TOKEN }}
-      E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,5 +23,8 @@ jobs:
         run: bun run clean && bun run build && bun run typecheck && bun run test:unit
 
       - name: E2E Tests
-        if: env.E2E_AUTH_TOKEN != ''
+        if: ${{ secrets.E2E_AUTH_TOKEN != '' }}
         run: bun run test:e2e
+        env:
+          E2E_AUTH_TOKEN: ${{ secrets.E2E_AUTH_TOKEN }}
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
