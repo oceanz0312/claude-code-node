@@ -2,12 +2,12 @@
 
 /**
  * Fake Claude CLI for test purposes.
- * Simulates the `claude -p --output-format stream-json --verbose --include-partial-messages` protocol.
+ * Simulates the claude stream-json protocol used by the SDK.
  */
 
 const args = process.argv.slice(2);
-const promptIndex = args.indexOf("-p");
-const prompt = promptIndex >= 0 ? args[promptIndex + 1] ?? "" : "";
+const inputFormat = getArgValue("--input-format");
+const { prompt, imageCount } = await readInput();
 const sessionId =
   getArgValue("--resume") ?? getArgValue("--session-id") ?? "test-session-001";
 const inspectPayload = {
@@ -16,6 +16,11 @@ const inspectPayload = {
   flags: {
     resumeSessionId: getArgValue("--resume"),
     continueSession: args.includes("--continue"),
+  },
+  input: {
+    prompt,
+    imageCount,
+    inputFormat,
   },
   env: {
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? null,
@@ -26,14 +31,10 @@ const inspectPayload = {
   },
 };
 
-// Wait for stdin to close (the SDK closes it immediately in -p mode)
-await waitForStdinClosed();
-
 process.on("SIGINT", () => {
   process.exit(130);
 });
 
-// ─── Inspection scenarios (for option tests) ───────────────────────────────
 if (prompt.includes("__inspect_exec_options__")) {
   emit({
     type: "result",
@@ -122,7 +123,6 @@ if (prompt.includes("__stdout_api_retry_auth__")) {
   process.exit(1);
 }
 
-// ─── Error scenario ──────────────────────────────────────────────────────────
 if (prompt.includes("force-error")) {
   emit({
     type: "system",
@@ -141,7 +141,6 @@ if (prompt.includes("force-error")) {
   process.exit(0);
 }
 
-// ─── Slow scenario (for abort tests) ────────────────────────────────────────
 if (prompt.includes("slow-run")) {
   emit({
     type: "system",
@@ -153,13 +152,11 @@ if (prompt.includes("slow-run")) {
   emitAssistantThinking("Preparing slow run...", sessionId);
   emitMessageStart("msg_slow", sessionId);
   emitTextDelta("msg_slow", "Still working", sessionId);
-  // Wait a long time so the test can abort
   await delay(5000);
   emitResult("slow run done", sessionId);
   process.exit(0);
 }
 
-// ─── Normal scenario ────────────────────────────────────────────────────────
 emit({
   type: "system",
   subtype: "init",
@@ -172,15 +169,9 @@ emitAssistantThinking("Let me analyze this...", sessionId);
 emitMessageStart("msg_main", sessionId);
 emitTextDelta("msg_main", "Here is ", sessionId);
 emitTextDelta("msg_main", "my response.", sessionId);
-
-// Tool use cycle
 emitToolUse("tool_1", "Read", { file_path: "/tmp/test.txt" }, sessionId);
 emitToolResult("tool_1", false, "file contents here", sessionId);
-
-// Final assistant text
 emitAssistantText("Here is my response.", sessionId, "msg_main");
-
-// Result
 emit({
   type: "result",
   subtype: "success",
@@ -204,15 +195,87 @@ emit({
 
 process.exit(0);
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
 function getArgValue(flag) {
   const index = args.indexOf(flag);
   return index >= 0 ? args[index + 1] ?? null : null;
 }
 
+function getPromptArg() {
+  const index = args.indexOf("-p");
+  if (index < 0) {
+    return "";
+  }
+
+  const next = args[index + 1];
+  if (!next || next.startsWith("-")) {
+    return "";
+  }
+
+  return next;
+}
+
+async function readInput() {
+  const stdinText = await readStdinText();
+  if (inputFormat !== "stream-json") {
+    return { prompt: getPromptArg(), imageCount: 0 };
+  }
+
+  const promptParts = [];
+  let imageCount = 0;
+
+  for (const line of stdinText.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    const content = parsed?.message?.content;
+    if (!Array.isArray(content)) {
+      continue;
+    }
+
+    for (const block of content) {
+      if (!block || typeof block !== "object") {
+        continue;
+      }
+
+      if (block.type === "text" && typeof block.text === "string") {
+        promptParts.push(block.text);
+        continue;
+      }
+
+      if (block.type === "image") {
+        imageCount += 1;
+      }
+    }
+  }
+
+  return {
+    prompt: promptParts.join("\n\n"),
+    imageCount,
+  };
+}
+
+async function readStdinText() {
+  process.stdin.setEncoding("utf8");
+  let text = "";
+
+  for await (const chunk of process.stdin) {
+    text += chunk;
+  }
+
+  return text;
+}
+
 function emit(obj) {
-  process.stdout.write(`${JSON.stringify(obj)}\n`);
+  process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
 function emitAssistantThinking(text, sid) {
@@ -312,20 +375,4 @@ function emitResult(text, sid) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function waitForStdinClosed() {
-  if (process.stdin.destroyed || process.stdin.readableEnded) {
-    return Promise.resolve();
-  }
-  process.stdin.resume();
-  return new Promise((resolve) => {
-    const done = () => {
-      process.stdin.off("end", done);
-      process.stdin.off("close", done);
-      resolve();
-    };
-    process.stdin.on("end", done);
-    process.stdin.on("close", done);
-  });
 }

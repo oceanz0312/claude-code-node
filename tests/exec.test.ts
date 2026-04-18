@@ -8,6 +8,14 @@ const FAKE_CLAUDE = path.resolve(
   "fixtures/fake-claude.mjs",
 );
 const TEST_CWD = path.resolve(import.meta.dirname);
+const RED_SQUARE_IMAGE = path.resolve(
+  import.meta.dirname,
+  "e2e/fixtures/images/red-square.png",
+);
+const SHAPES_IMAGE = path.resolve(
+  import.meta.dirname,
+  "e2e/fixtures/images/shapes-demo.png",
+);
 const INSPECT_PROMPT = "__inspect_exec_options__";
 const RAW_EVENTS_PROMPT = "__inspect_raw_events__";
 const PARENT_ENV_KEY = "INSPECT_INHERITED_ENV";
@@ -18,6 +26,11 @@ type Inspection = {
   flags: {
     resumeSessionId: string | null;
     continueSession: boolean;
+  };
+  input: {
+    prompt: string;
+    imageCount: number;
+    inputFormat: string | null;
   };
   env: {
     ANTHROPIC_API_KEY: string | null;
@@ -38,6 +51,7 @@ async function inspectExec(options: {
   resumeSessionId?: string | null;
   continueSession?: boolean;
   images?: string[];
+  inputItems?: Array<{ type: "text"; text: string } | { type: "local_image"; path: string }>;
   env?: Record<string, string>;
 } = {}): Promise<Inspection> {
   const exec = options.exec ?? new ClaudeCodeExec(FAKE_CLAUDE);
@@ -50,6 +64,7 @@ async function inspectExec(options: {
     resumeSessionId: options.resumeSessionId,
     continueSession: options.continueSession,
     images: options.images,
+    inputItems: options.inputItems,
     env: options.env,
     onLine: (line) => { lines.push(line); },
   });
@@ -142,6 +157,7 @@ describe("ClaudeCodeExec", () => {
     const inspection = await inspectExec();
 
     expect(getFlagValues(inspection.args, "-p")).toEqual([INSPECT_PROMPT]);
+    expect(getFlagValues(inspection.args, "--input-format")).toEqual([]);
     expect(getFlagValues(inspection.args, "--output-format")).toEqual([
       "stream-json",
     ]);
@@ -185,9 +201,13 @@ describe("ClaudeCodeExec", () => {
     expect(getFlagValues(inspection.args, "--permission-mode")).toEqual([]);
   });
 
-  test("expands repeated flags for list-style options and images", async () => {
+  test("expands repeated flags for list-style options and uses stream-json stdin for images", async () => {
     const inspection = await inspectExec({
-      images: ["img-1.png", "img-2.png"],
+      inputItems: [
+        { type: "text", text: INSPECT_PROMPT },
+        { type: "local_image", path: RED_SQUARE_IMAGE },
+        { type: "local_image", path: SHAPES_IMAGE },
+      ],
       sessionOptions: {
         additionalDirectories: ["/repo/packages/a", "/repo/packages/b"],
         allowedTools: ["Read", "Edit"],
@@ -217,10 +237,13 @@ describe("ClaudeCodeExec", () => {
       "plugins/a",
       "plugins/b",
     ]);
-    expect(getFlagValues(inspection.args, "--image")).toEqual([
-      "img-1.png",
-      "img-2.png",
+    expect(getFlagValues(inspection.args, "--input-format")).toEqual([
+      "stream-json",
     ]);
+    expect(getFlagValues(inspection.args, "-p")).toEqual(["--input-format"]);
+    expect(inspection.input.prompt).toBe(INSPECT_PROMPT);
+    expect(inspection.input.imageCount).toBe(2);
+    expect(inspection.input.inputFormat).toBe("stream-json");
   });
 
   test("passes scalar flags through and serializes object agents", async () => {

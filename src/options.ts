@@ -19,11 +19,12 @@ export type PermissionMode =
   | "default"
   | "acceptEdits"
   | "plan"
+  | "auto"
   | "dontAsk"
   | "bypassPermissions";
 
 /** Model effort levels. */
-export type Effort = "low" | "medium" | "high" | "max";
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Raw Claude CLI process events exposed during a turn. */
 export type RawClaudeEvent =
@@ -40,8 +41,15 @@ export type AgentDefinition = {
   description?: string;
   prompt?: string;
   tools?: string[];
+  allowedTools?: string[];
+  disallowedTools?: string[];
   model?: string;
+  effort?: Effort;
   maxTurns?: number;
+  permissionMode?: PermissionMode;
+  isolation?: "worktree";
+  initialPrompt?: string;
+  mcpServers?: Record<string, unknown>;
 };
 
 /** Session options — passed when starting or resuming a session. */
@@ -120,6 +128,12 @@ export type SessionOptions = {
   debug?: string | boolean;
   /** Debug log output file. */
   debugFile?: string;
+  /** JSON Schema to enforce structured output (result in structured_output field). */
+  jsonSchema?: string | object;
+  /** Explicit session UUID. */
+  sessionId?: string;
+  /** Fork the session when resuming (creates a new session ID). */
+  forkSession?: boolean;
   /**
    * Write all RawClaudeEvent records as NDJSON into the consumer project's
    * `logs/` directory. Pass a string to override the target directory.

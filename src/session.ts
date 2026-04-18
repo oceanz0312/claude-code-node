@@ -36,6 +36,7 @@ export type Turn = {
   finalResponse: string;
   usage: TurnUsage | null;
   sessionId: string | null;
+  structuredOutput: unknown | null;
 };
 
 export type RunResult = Turn;
@@ -152,8 +153,9 @@ export class Session {
     let usage: TurnUsage | null = null;
     let sessionId: string | null = this._id;
     let streamError: ErrorEvent | null = null;
+    const streamResult: StreamProcessResult = { structuredOutput: null };
 
-    await this._processStream(input, turnOptions, (event) => {
+    await this._processStream(input, turnOptions, streamResult, (event) => {
       events.push(event);
 
       if (event.type === "text_delta") {
@@ -177,7 +179,13 @@ export class Session {
       throw new Error((streamError as ErrorEvent).message);
     }
 
-    return { events, finalResponse, usage, sessionId };
+    return {
+      events,
+      finalResponse,
+      usage,
+      sessionId,
+      structuredOutput: streamResult.structuredOutput,
+    };
   }
 
   /** Execute a turn and stream RelayEvents. */
@@ -186,8 +194,9 @@ export class Session {
     turnOptions: TurnOptions = {},
   ): Promise<StreamedTurn> {
     const channel = createEventChannel<RelayEvent>();
+    const streamResult: StreamProcessResult = { structuredOutput: null };
 
-    this._processStream(input, turnOptions, (event) => {
+    this._processStream(input, turnOptions, streamResult, (event) => {
       channel.push(event);
     })
       .then(() => channel.end())
@@ -201,9 +210,11 @@ export class Session {
   private async _processStream(
     input: Input,
     turnOptions: TurnOptions,
+    streamResult: StreamProcessResult,
     onEvent: (event: RelayEvent) => void,
   ): Promise<void> {
     const { prompt, images } = normalizeInput(input);
+    const inputItems = Array.isArray(input) ? input : undefined;
     const translator = new Translator();
     const streamState = createStreamState();
     const rawEventLogger = await createRawEventLogger(this._sessionOptions.rawEventLog);
@@ -236,11 +247,12 @@ export class Session {
     try {
       await this._exec.run({
         input: prompt,
+        inputItems,
         images: images.length > 0 ? images : undefined,
         resumeSessionId: this._hasRun ? this._id : (this._id && !this._continueMode ? this._id : null),
         continueSession: !this._hasRun && this._continueMode,
         sessionOptions: this._sessionOptions,
-        cliPath: this._globalOptions.cliPath ?? "claude",
+        cliPath: this._globalOptions.cliPath,
         env: this._globalOptions.env,
         signal: abortSignalBinding.signal,
         rawEventLogger,
@@ -248,6 +260,13 @@ export class Session {
         onLine: (line) => {
           const parsed = parseLine(line);
           if (!parsed) return;
+
+          if (parsed.type === "result") {
+            const rawResult = parsed as ClaudeEvent & { structured_output?: unknown };
+            if (rawResult.structured_output !== undefined) {
+              streamResult.structuredOutput = rawResult.structured_output;
+            }
+          }
 
           if (!fatalCliError && turnOptions.failFastOnCliApiError) {
             const detectedError = extractFatalCliApiErrorFromStdoutEvent(parsed);
@@ -317,8 +336,19 @@ function normalizeInput(input: Input): { prompt: string; images: string[] } {
   return { prompt: promptParts.join("\n\n"), images };
 }
 
+type StreamedMessageState = {
+  textStreamed: boolean;
+  thinkingStreamed: boolean;
+};
+
 type StreamState = {
-  streamedMessageIds: Set<string>;
+  activeMessageId: string | null;
+  lastCompletedMessageId: string | null;
+  messages: Map<string, StreamedMessageState>;
+};
+
+type StreamProcessResult = {
+  structuredOutput: unknown | null;
 };
 
 type RawStreamEventEnvelope = ClaudeEvent & {
@@ -339,8 +369,27 @@ type RawStreamEventPayload = {
 
 function createStreamState(): StreamState {
   return {
-    streamedMessageIds: new Set<string>(),
+    activeMessageId: null,
+    lastCompletedMessageId: null,
+    messages: new Map<string, StreamedMessageState>(),
   };
+}
+
+function ensureStreamedMessageState(
+  streamState: StreamState,
+  messageId: string,
+): StreamedMessageState {
+  const existing = streamState.messages.get(messageId);
+  if (existing) {
+    return existing;
+  }
+
+  const nextState: StreamedMessageState = {
+    textStreamed: false,
+    thinkingStreamed: false,
+  };
+  streamState.messages.set(messageId, nextState);
+  return nextState;
 }
 
 function createAbortSignalBinding(
@@ -490,12 +539,8 @@ function translateRelayEvents(
 
   const relayEvents = translator.translate(parsed);
 
-  // Claude emits a final assistant snapshot after stream_event deltas.
-  // Keep tool-related events, but suppress duplicate text/thinking output.
-  if (parsed.type === "assistant" && hasStreamedMessage(parsed, streamState)) {
-    return relayEvents.filter(
-      (event) => event.type !== "text_delta" && event.type !== "thinking_delta",
-    );
+  if (parsed.type === "assistant") {
+    return suppressDuplicateAssistantSnapshot(parsed, relayEvents, streamState);
   }
 
   return relayEvents;
@@ -510,32 +555,91 @@ function translateStreamEvent(
   streamState: StreamState,
 ): RelayEvent[] {
   const event = raw.event;
-  if (!event || event.type !== "content_block_delta" || !event.delta) {
+  if (!event) {
     return [];
   }
 
-  const messageId = getStreamEventMessageId(event);
+  if (event.type === "message_start") {
+    const messageId = getMessageId(event.message);
+    if (messageId) {
+      streamState.activeMessageId = messageId;
+      ensureStreamedMessageState(streamState, messageId);
+    }
+    return [];
+  }
+
+  if (event.type === "message_stop") {
+    const messageId = resolveStreamEventMessageId(event, streamState);
+    if (messageId) {
+      ensureStreamedMessageState(streamState, messageId);
+      streamState.lastCompletedMessageId = messageId;
+      if (streamState.activeMessageId === messageId) {
+        streamState.activeMessageId = null;
+      }
+    }
+    return [];
+  }
+
+  if (event.type !== "content_block_delta" || !event.delta) {
+    return [];
+  }
+
+  const messageId = resolveStreamEventMessageId(event, streamState);
+  const messageState = messageId
+    ? ensureStreamedMessageState(streamState, messageId)
+    : null;
   const { delta } = event;
 
   if (delta.type === "text_delta") {
-    if (!delta.text) return [];
-    if (messageId) streamState.streamedMessageIds.add(messageId);
+    if (!delta.text) {
+      return [];
+    }
+    if (messageState) {
+      messageState.textStreamed = true;
+    }
     return [{ type: "text_delta", content: delta.text }];
   }
 
   if (delta.type === "thinking_delta") {
     const content = delta.thinking ?? delta.text ?? "";
-    if (!content) return [];
-    if (messageId) streamState.streamedMessageIds.add(messageId);
+    if (!content) {
+      return [];
+    }
+    if (messageState) {
+      messageState.thinkingStreamed = true;
+    }
     return [{ type: "thinking_delta", content }];
   }
 
   return [];
 }
 
-function hasStreamedMessage(raw: ClaudeEvent, streamState: StreamState): boolean {
-  const messageId = getMessageId(raw.message);
-  return messageId != null && streamState.streamedMessageIds.has(messageId);
+function suppressDuplicateAssistantSnapshot(
+  raw: ClaudeEvent,
+  relayEvents: RelayEvent[],
+  streamState: StreamState,
+): RelayEvent[] {
+  const messageId = getMessageId(raw.message) ?? streamState.lastCompletedMessageId;
+  if (!messageId) {
+    return relayEvents;
+  }
+
+  const messageState = streamState.messages.get(messageId);
+  if (!messageState) {
+    return relayEvents;
+  }
+
+  return relayEvents.filter((event) => {
+    if (event.type === "text_delta") {
+      return !messageState.textStreamed;
+    }
+
+    if (event.type === "thinking_delta") {
+      return !messageState.thinkingStreamed;
+    }
+
+    return true;
+  });
 }
 
 function getStreamEventMessageId(event: RawStreamEventPayload): string | null {
@@ -543,6 +647,13 @@ function getStreamEventMessageId(event: RawStreamEventPayload): string | null {
     return event.message_id;
   }
   return getMessageId(event.message);
+}
+
+function resolveStreamEventMessageId(
+  event: RawStreamEventPayload,
+  streamState: StreamState,
+): string | null {
+  return getStreamEventMessageId(event) ?? streamState.activeMessageId;
 }
 
 function getMessageId(message: unknown): string | null {
