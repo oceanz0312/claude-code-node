@@ -18,8 +18,8 @@ jobs:
 
       - run: npm ci
 
-      - name: Typecheck & Unit Tests
-        run: bun run clean && bun run build && bun run check
+      - name: Build & Typecheck & Unit Tests
+        run: bun run clean && bun run build && bun run typecheck && bun run test:unit
 
       - name: E2E Tests
         if: ${{ secrets.E2E_AUTH_TOKEN != '' }}
