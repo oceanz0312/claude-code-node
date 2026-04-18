@@ -8,9 +8,9 @@
 
 1. `README.md`
 2. `docs/README.md`
-3. `docs/architecture.md`
-4. `docs/testing-and-validation.md`
-5. `docs/agent-playbook.md`
+3. `docs/agent/architecture.md`
+4. `docs/agent/testing-and-validation.md`
+5. `docs/agent/agent-playbook.md`
 6. `src/index.ts`
 7. `src/options.ts`
 8. `src/exec.ts`
@@ -20,10 +20,10 @@
 
 为避免 README、AGENTS 和补充文档长期漂移，本文件只保留职责边界和修改原则；细节请优先查阅对应文档：
 
-- 架构和执行链路：`docs/architecture.md`
-- 认证参数选型：`docs/authentication.md`
-- 测试、覆盖率与验证命令：`docs/testing-and-validation.md`
-- 自动化 agent 的工作顺序和排障手册：`docs/agent-playbook.md`
+- 架构和执行链路：`docs/agent/architecture.md`
+- 认证参数选型：`docs/agent/authentication.md`
+- 测试、覆盖率与验证命令：`docs/agent/testing-and-validation.md`
+- 自动化 agent 的工作顺序和排障手册：`docs/agent/agent-playbook.md`
 
 ## 仓库目标
 
@@ -206,7 +206,7 @@ type UserInput =
 
 - 新增 CLI 参数映射时，先在 `src/options.ts` 增加类型，再在 `src/exec.ts` 的 `buildArgs()` 中补齐转换逻辑
 - 文档更新时同步修改 `README.md`
-- 如果改动涉及执行链路或验证方式，也同步检查 `docs/architecture.md` 和 `docs/testing-and-validation.md`
+- 如果改动涉及执行链路或验证方式，也同步检查 `docs/agent/architecture.md` 和 `docs/agent/testing-and-validation.md`
 
 ## 修改建议
 
@@ -249,7 +249,7 @@ type UserInput =
 
 ## 测试约定
 
-完整说明见 `docs/testing-and-validation.md`。这里仅保留最重要的约束。
+完整说明见 `docs/agent/testing-and-validation.md`。这里仅保留最重要的约束。
 
 测试文件：
 
@@ -293,7 +293,7 @@ type UserInput =
    - 文档是否与代码一致
    - 测试是否覆盖新增行为
    - 是否引入了重复抽象或职责交叉
-5. 如果遇到认证失败、长时间重试或无输出，优先查看 `docs/testing-and-validation.md` 和 `logs/claude-raw-events-*.ndjson`
+5. 如果遇到认证失败、长时间重试或无输出，优先查看 `docs/agent/testing-and-validation.md` 和 `logs/claude-raw-events-*.ndjson`
 
 ## 不建议的做法
 

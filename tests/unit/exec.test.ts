@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
-import { ClaudeCodeExec } from "../src/exec.js";
-import type { RawClaudeEvent, SessionOptions } from "../src/options.js";
+import { ClaudeCodeExec } from "../../src/exec.js";
+import type { RawClaudeEvent, SessionOptions } from "../../src/options.js";
 
 const FAKE_CLAUDE = path.resolve(
   import.meta.dirname,
@@ -10,11 +10,11 @@ const FAKE_CLAUDE = path.resolve(
 const TEST_CWD = path.resolve(import.meta.dirname);
 const RED_SQUARE_IMAGE = path.resolve(
   import.meta.dirname,
-  "e2e/fixtures/images/red-square.png",
+  "../e2e/fixtures/images/red-square.png",
 );
 const SHAPES_IMAGE = path.resolve(
   import.meta.dirname,
-  "e2e/fixtures/images/shapes-demo.png",
+  "../e2e/fixtures/images/shapes-demo.png",
 );
 const INSPECT_PROMPT = "__inspect_exec_options__";
 const RAW_EVENTS_PROMPT = "__inspect_raw_events__";

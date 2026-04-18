@@ -39,6 +39,31 @@ const turn2 = await session.run("Now add test coverage for edge cases");
 - **唯一实现流式去重**（消除 CLI verbose 模式的重复文本）
 - **唯一无需 CLI 即可运行的真实测试**（900+ 行，fake-claude.mjs 模拟器）
 
+## 经过测试，值得信赖
+
+| 指标 | 详情 |
+|------|------|
+| **39 个测试用例** | 28 个单元测试 + 11 个真实模型 E2E 测试 |
+| **1,690 行**测试代码 | 覆盖会话生命周期、流式输出、中断、错误检测、图片输入、结构化输出、CLI 参数转发 |
+| **Fake CLI 模拟器** | 378 行 `fake-claude.mjs`，完整模拟 `stream-json` 协议 — 单元测试无需真实 CLI 或 API Key |
+| **真实 E2E 测试套件** | 使用真实凭据调用 Claude CLI — 测试多轮记忆、认证路径、系统提示词、图片理解、Agent 身份识别、15+ CLI 参数转发 |
+| **E2E 测试产物** | 每次运行保存 NDJSON 日志、中继事件和最终响应到 `tests/e2e/artifacts/`，便于事后分析 |
+| **覆盖率** | `bun run test:coverage` — 基于 Bun 内置覆盖率工具 |
+
+```
+File                  | % Funcs | % Lines
+----------------------|---------|--------
+All files             |  100.00 |   99.71
+ src/claude-code.ts   |  100.00 |  100.00
+ src/exec.ts          |  100.00 |  100.00
+ src/raw-event-log.ts |  100.00 |   98.84
+ src/session.ts       |  100.00 |  100.00
+```
+
+**40 个测试通过，0 失败，183 个 expect() 断言。**
+
+单元测试验证正确性，无需外部依赖。E2E 测试验证真实行为。两者均在 CI 中运行。
+
 ### 它不是什么
 
 - 不是 HTTP API 服务（需要的话用 [claude-code-openai-wrapper](https://github.com/RichardAtCT/claude-code-openai-wrapper)）

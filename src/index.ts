@@ -1,5 +1,5 @@
 // ─── Classes ─────────────────────────────────────────────────────────────────
-export { ClaudeCode } from "./claude-code.js";
+export { ClaudeCode } from "./claude-code";
 export { Session } from "./session.js";
 
 // ─── SDK types ───────────────────────────────────────────────────────────────

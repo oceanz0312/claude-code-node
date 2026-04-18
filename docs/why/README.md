@@ -39,6 +39,31 @@ We reviewed [9 Claude Code wrapper projects](https://github.com/oceanz0312/claud
 - **Only project with stream deduplication** (no duplicate text from CLI verbose mode)
 - **Only project with real tests that run without a CLI** (900+ lines, fake-claude.mjs simulator)
 
+## Tested & Reliable
+
+| Metric | Detail |
+|--------|--------|
+| **39 test cases** | 28 unit tests + 11 real-model E2E tests |
+| **1,690 lines** of test code | Across 3 test files, covering session lifecycle, streaming, abort, error detection, image input, structured output, and CLI argument forwarding |
+| **Fake CLI simulator** | 378-line `fake-claude.mjs` that emulates the full `stream-json` protocol — unit tests run without a real CLI or API key |
+| **Real E2E suite** | Hits the actual Claude CLI with real credentials — tests multi-turn memory, auth paths, system prompts, image understanding, agent identity, and 15+ CLI flag forwarding |
+| **E2E test artifacts** | Every run saves NDJSON logs, relay events, and final responses to `tests/e2e/artifacts/` for post-mortem analysis |
+| **Coverage** | `bun run test:coverage` — built-in Bun coverage on all unit tests |
+
+```
+File                  | % Funcs | % Lines
+----------------------|---------|--------
+All files             |  100.00 |   99.71
+ src/claude-code.ts   |  100.00 |  100.00
+ src/exec.ts          |  100.00 |  100.00
+ src/raw-event-log.ts |  100.00 |   98.84
+ src/session.ts       |  100.00 |  100.00
+```
+
+**40 tests passed, 0 failed, 183 expect() calls.**
+
+Unit tests verify correctness without external dependencies. E2E tests verify real-world behavior. Both run in CI.
+
 ### What It's NOT
 
 - Not an HTTP API server (use [claude-code-openai-wrapper](https://github.com/RichardAtCT/claude-code-openai-wrapper) for that)

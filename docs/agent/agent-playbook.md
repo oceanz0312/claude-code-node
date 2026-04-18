@@ -6,7 +6,7 @@
 
 1. `README.md`
 2. `AGENTS.md`
-3. `docs/architecture.md`
+3. `docs/agent/architecture.md`
 4. `src/index.ts`
 5. `src/options.ts`
 6. `src/exec.ts`
@@ -77,8 +77,8 @@
 
 先看：
 
-- `docs/authentication.md`
-- `docs/testing-and-validation.md`
+- `docs/agent/authentication.md`
+- `docs/agent/testing-and-validation.md`
 - `logs/claude-raw-events-*.ndjson`
 
 ### `runStreamed()` 长时间没有文本输出
@@ -98,7 +98,7 @@
 
 先看：
 
-- `docs/architecture.md`
+- `docs/agent/architecture.md`
 - `src/session.ts`
 - `tests/session.test.ts`
 
