@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      E2E_AUTH_TOKEN: ${{ secrets.E2E_AUTH_TOKEN }}
+      E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: npm ci
+
+      - name: Build & Typecheck & Unit Tests
+        run: bun run clean && bun run build && bun run typecheck && bun run test:unit
+
+      - name: E2E Tests
+        if: ${{ env.E2E_AUTH_TOKEN != '' }}
+        run: bun run test:e2e

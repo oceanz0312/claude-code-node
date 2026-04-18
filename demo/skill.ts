@@ -1,17 +1,24 @@
+import * as path from "node:path";
 import * as readline from "node:readline";
 import { ClaudeCode } from "../src/index.js";
+import { secrets } from "../.env.js";
 
-const claude = new ClaudeCode();
+const claude = new ClaudeCode({
+  ...(secrets.apiKey ? { apiKey: secrets.apiKey } : {}),
+  ...(secrets.authToken ? { authToken: secrets.authToken } : {}),
+  ...(secrets.baseUrl ? { baseUrl: secrets.baseUrl } : {}),
+});
+
+const pluginDir = path.resolve(import.meta.dirname, "claude-code-plugin");
 
 const session = claude.startSession({
-  cwd: "/Users/bytedance/Documents/ttls_repo/agent-sdk/demo",
+  cwd: import.meta.dirname,
   dangerouslySkipPermissions: true,
-  // pluginDir: ""
-  // permissionMode: "plan"
+  pluginDir,
 });
 
 const initialPrompt =
-  "使用 ai-friendly-evaluate 技能评估 https://code.byted.org/zhengdaoyang/ttls_ai_server 这个仓库的 ai-friendly 分数，你需要先克隆这个仓库，然后使用 ai-friendly-evaluate 技能评估这个仓库的 ai-friendly 分数";
+  "使用 ai-friendly-evaluate 技能评估当前仓库的 ai-friendly 分数";
 
 const rl = readline.createInterface({
   input: process.stdin,

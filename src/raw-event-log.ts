@@ -1,6 +1,8 @@
-import { mkdir, open } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { once } from "node:events";
 import path from "node:path";
-import type { RawClaudeEvent } from "./options.js";
+import type { RawClaudeEvent } from "./options";
 
 export type RawEventLogOption = boolean | string | undefined;
 
@@ -10,12 +12,12 @@ type RawEventRecord = {
 };
 
 export type RawEventLogger = {
-  log: (event: RawClaudeEvent) => Promise<void>;
+  log: (event: RawClaudeEvent) => void;
   close: () => Promise<void>;
 };
 
 const noopLogger: RawEventLogger = {
-  log: async () => {},
+  log: () => {},
   close: async () => {},
 };
 
@@ -26,22 +28,47 @@ export async function createRawEventLogger(
     return noopLogger;
   }
 
-  const dir =
-    typeof option === "string"
-      ? path.resolve(option)
-      : path.resolve(process.cwd(), "logs");
+  let dir: string;
+  if (typeof option === "string") {
+    if (!path.isAbsolute(option)) {
+      throw new Error(
+        `rawEventLog path must be an absolute path, got: "${option}"`,
+      );
+    }
+    dir = option;
+  } else {
+    dir = path.resolve(process.cwd(), "agent_logs");
+  }
 
   await mkdir(dir, { recursive: true });
 
   const filePath = path.join(dir, `${createFilename()}.ndjson`);
-  const file = await open(filePath, "a");
-  let writeChain = Promise.resolve();
+  const stream = createWriteStream(filePath, {
+    flags: "a",
+    encoding: "utf8",
+  });
   let closed = false;
+  let fatalError: Error | null = null;
+  let pendingDrain: Promise<void> | null = null;
+
+  stream.on("error", (error) => {
+    fatalError = error;
+  });
+
+  const ensureDrainPromise = (): Promise<void> => {
+    if (!pendingDrain) {
+      pendingDrain = once(stream, "drain").then(() => {
+        pendingDrain = null;
+      });
+    }
+
+    return pendingDrain;
+  };
 
   return {
     log(event) {
-      if (closed) {
-        return Promise.resolve();
+      if (closed || fatalError) {
+        return;
       }
 
       const record: RawEventRecord = {
@@ -49,19 +76,27 @@ export async function createRawEventLogger(
         event: serializeRawClaudeEvent(event),
       };
 
-      writeChain = writeChain.then(() =>
-        file.appendFile(`${JSON.stringify(record)}\n`, "utf8"),
-      );
-
-      return writeChain;
+      const accepted = stream.write(`${JSON.stringify(record)}\n`);
+      if (!accepted) {
+        void ensureDrainPromise();
+      }
     },
     async close() {
       if (closed) {
         return;
       }
       closed = true;
-      await writeChain;
-      await file.close();
+
+      if (pendingDrain) {
+        await pendingDrain;
+      }
+
+      stream.end();
+      await once(stream, "close");
+
+      if (fatalError) {
+        throw fatalError;
+      }
     },
   };
 }

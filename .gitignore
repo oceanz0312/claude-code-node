@@ -3,3 +3,6 @@ dist/
 logs/
 *.tsbuildinfo
 .DS_Store
+tests/e2e/artifacts/
+.env
+agent_logs/

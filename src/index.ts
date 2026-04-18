@@ -1,6 +1,6 @@
 // ─── Classes ─────────────────────────────────────────────────────────────────
-export { ClaudeCode } from "./claude-code.js";
-export { Session } from "./session.js";
+export { ClaudeCode } from "./claude-code";
+export { Session } from "./session";
 
 // ─── SDK types ───────────────────────────────────────────────────────────────
 export type {
@@ -11,7 +11,7 @@ export type {
   RawClaudeEvent,
   AgentDefinition,
   TurnOptions,
-} from "./options.js";
+} from "./options";
 
 export type {
   Input,
@@ -21,7 +21,7 @@ export type {
   RunResult,
   StreamedTurn,
   RunStreamedResult,
-} from "./session.js";
+} from "./session";
 
 // ─── Re-export claude-code-parser types and utilities ────────────────────────
 export type {

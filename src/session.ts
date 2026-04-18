@@ -10,9 +10,9 @@ import type {
   SessionOptions,
   TurnOptions,
   RawClaudeEvent,
-} from "./options.js";
-import { ClaudeCodeExec } from "./exec.js";
-import { createRawEventLogger } from "./raw-event-log.js";
+} from "./options";
+import { ClaudeCodeExec } from "./exec";
+import { createRawEventLogger } from "./raw-event-log";
 
 // ─── Input types ─────────────────────────────────────────────────────────────
 
@@ -36,12 +36,13 @@ export type Turn = {
   finalResponse: string;
   usage: TurnUsage | null;
   sessionId: string | null;
+  structuredOutput: unknown | null;
 };
 
 export type RunResult = Turn;
 
 export type StreamedTurn = {
-  events: AsyncGenerator<RelayEvent>;
+  events: AsyncIterable<RelayEvent>;
 };
 
 export type RunStreamedResult = StreamedTurn;
@@ -50,6 +51,70 @@ type AbortSignalBinding = {
   signal?: AbortSignal;
   cleanup: () => void;
 };
+
+// ─── Event Channel ──────────────────────────────────────────────────────────
+
+type EventChannel<T> = AsyncIterable<T> & {
+  push(value: T): void;
+  end(): void;
+  error(err: Error): void;
+};
+
+function createEventChannel<T>(): EventChannel<T> {
+  const buffer: T[] = [];
+  let waiting: {
+    resolve: (result: IteratorResult<T>) => void;
+    reject: (err: Error) => void;
+  } | null = null;
+  let done = false;
+  let pendingError: Error | null = null;
+
+  return {
+    push(value: T) {
+      if (waiting) {
+        const { resolve } = waiting;
+        waiting = null;
+        resolve({ value, done: false });
+      } else {
+        buffer.push(value);
+      }
+    },
+    end() {
+      done = true;
+      if (waiting) {
+        const { resolve } = waiting;
+        waiting = null;
+        resolve({ value: undefined as T, done: true });
+      }
+    },
+    error(err: Error) {
+      pendingError = err;
+      if (waiting) {
+        const { reject } = waiting;
+        waiting = null;
+        reject(err);
+      }
+    },
+    [Symbol.asyncIterator](): AsyncIterator<T> {
+      return {
+        next(): Promise<IteratorResult<T>> {
+          if (buffer.length > 0) {
+            return Promise.resolve({ value: buffer.shift()!, done: false });
+          }
+          if (pendingError) {
+            return Promise.reject(pendingError);
+          }
+          if (done) {
+            return Promise.resolve({ value: undefined as T, done: true });
+          }
+          return new Promise((resolve, reject) => {
+            waiting = { resolve, reject };
+          });
+        },
+      };
+    },
+  };
+}
 
 // ─── Session ─────────────────────────────────────────────────────────────────
 
@@ -83,13 +148,14 @@ export class Session {
 
   /** Execute a turn and return the completed result. */
   async run(input: Input, turnOptions: TurnOptions = {}): Promise<Turn> {
-    const generator = this._runStreamedInternal(input, turnOptions);
     const events: RelayEvent[] = [];
     let finalResponse = "";
     let usage: TurnUsage | null = null;
     let sessionId: string | null = this._id;
+    let streamError: ErrorEvent | null = null;
+    const streamResult: StreamProcessResult = { structuredOutput: null };
 
-    for await (const event of generator) {
+    await this._processStream(input, turnOptions, streamResult, (event) => {
       events.push(event);
 
       if (event.type === "text_delta") {
@@ -103,17 +169,23 @@ export class Session {
           outputTokens: tc.outputTokens,
           contextWindow: tc.contextWindow,
         };
-      } else if (event.type === "session_meta") {
-        // session_meta doesn't carry sessionId in RelayEvent,
-        // but translator.sessionId captures it
       } else if (event.type === "error") {
-        const err = event as ErrorEvent;
-        if (err.sessionId) sessionId = err.sessionId;
-        throw new Error(err.message);
+        streamError = event as ErrorEvent;
+        if (streamError.sessionId) sessionId = streamError.sessionId;
       }
+    });
+
+    if (streamError) {
+      throw new Error((streamError as ErrorEvent).message);
     }
 
-    return { events, finalResponse, usage, sessionId };
+    return {
+      events,
+      finalResponse,
+      usage,
+      sessionId,
+      structuredOutput: streamResult.structuredOutput,
+    };
   }
 
   /** Execute a turn and stream RelayEvents. */
@@ -121,14 +193,28 @@ export class Session {
     input: Input,
     turnOptions: TurnOptions = {},
   ): Promise<StreamedTurn> {
-    return { events: this._runStreamedInternal(input, turnOptions) };
+    const channel = createEventChannel<RelayEvent>();
+    const streamResult: StreamProcessResult = { structuredOutput: null };
+
+    this._processStream(input, turnOptions, streamResult, (event) => {
+      channel.push(event);
+    })
+      .then(() => channel.end())
+      .catch((err) =>
+        channel.error(err instanceof Error ? err : new Error(String(err))),
+      );
+
+    return { events: channel };
   }
 
-  private async *_runStreamedInternal(
+  private async _processStream(
     input: Input,
-    turnOptions: TurnOptions = {},
-  ): AsyncGenerator<RelayEvent> {
+    turnOptions: TurnOptions,
+    streamResult: StreamProcessResult,
+    onEvent: (event: RelayEvent) => void,
+  ): Promise<void> {
     const { prompt, images } = normalizeInput(input);
+    const inputItems = Array.isArray(input) ? input : undefined;
     const translator = new Translator();
     const streamState = createStreamState();
     const rawEventLogger = await createRawEventLogger(this._sessionOptions.rawEventLog);
@@ -144,86 +230,85 @@ export class Session {
     );
 
     const onRawEvent = turnOptions.failFastOnCliApiError
-      ? async (event: RawClaudeEvent): Promise<void> => {
-          await rawEventLogger.log(event);
-
-          if (!fatalCliError) {
-            stderrText = appendStderrText(stderrText, event);
-            const detectedError = extractFatalCliApiError(stderrText);
-            if (detectedError) {
-              fatalCliError = detectedError;
-              cliAbortController?.abort();
-            }
-          }
-
-          await turnOptions.onRawEvent?.(event);
-        }
-      : this._sessionOptions.rawEventLog || turnOptions.onRawEvent
-        ? async (event: RawClaudeEvent): Promise<void> => {
-            await rawEventLogger.log(event);
-            await turnOptions.onRawEvent?.(event);
-          }
-        : undefined;
-
-    const generator = this._exec.run({
-      input: prompt,
-      images: images.length > 0 ? images : undefined,
-      resumeSessionId: this._hasRun ? this._id : (this._id && !this._continueMode ? this._id : null),
-      continueSession: !this._hasRun && this._continueMode,
-      sessionOptions: this._sessionOptions,
-      cliPath: this._globalOptions.cliPath ?? "claude",
-      env: this._globalOptions.env,
-      signal: abortSignalBinding.signal,
-      onRawEvent,
-    });
-
-    try {
-      for await (const line of generator) {
-        const parsed = parseLine(line);
-        if (!parsed) continue;
-
-        if (!fatalCliError && turnOptions.failFastOnCliApiError) {
-          const detectedError = extractFatalCliApiErrorFromStdoutEvent(parsed);
+      ? (event: RawClaudeEvent): void => {
+        if (!fatalCliError) {
+          stderrText = appendStderrText(stderrText, event);
+          const detectedError = extractFatalCliApiError(stderrText);
           if (detectedError) {
             fatalCliError = detectedError;
-            if (!this._id && typeof parsed.session_id === "string") {
-              this._id = parsed.session_id;
-            }
             cliAbortController?.abort();
-            yield {
-              type: "error",
-              message: fatalCliError,
-              sessionId: this._id ?? translator.sessionId,
-            };
-            return;
           }
         }
 
-        const relayEvents = translateRelayEvents(parsed, translator, streamState);
+        turnOptions.onRawEvent?.(event);
+      }
+      : turnOptions.onRawEvent;
 
-        // Capture session ID from translator state
-        if (translator.sessionId && !this._id) {
-          this._id = translator.sessionId;
-        }
+    try {
+      await this._exec.run({
+        input: prompt,
+        inputItems,
+        images: images.length > 0 ? images : undefined,
+        resumeSessionId: this._hasRun ? this._id : (this._id && !this._continueMode ? this._id : null),
+        continueSession: !this._hasRun && this._continueMode,
+        sessionOptions: this._sessionOptions,
+        cliPath: this._globalOptions.cliPath,
+        env: this._globalOptions.env,
+        signal: abortSignalBinding.signal,
+        rawEventLogger,
+        onRawEvent,
+        onLine: (line) => {
+          const parsed = parseLine(line);
+          if (!parsed) return;
 
-        for (const event of relayEvents) {
-          // Also capture sessionId from turn_complete
-          if (event.type === "turn_complete") {
-            const tc = event as TurnCompleteEvent;
-            if (tc.sessionId && !this._id) {
-              this._id = tc.sessionId;
+          if (parsed.type === "result") {
+            const rawResult = parsed as ClaudeEvent & { structured_output?: unknown };
+            if (rawResult.structured_output !== undefined) {
+              streamResult.structuredOutput = rawResult.structured_output;
             }
           }
-          yield event;
-        }
-      }
+
+          if (!fatalCliError && turnOptions.failFastOnCliApiError) {
+            const detectedError = extractFatalCliApiErrorFromStdoutEvent(parsed);
+            if (detectedError) {
+              fatalCliError = detectedError;
+              if (!this._id && typeof parsed.session_id === "string") {
+                this._id = parsed.session_id;
+              }
+              cliAbortController?.abort();
+              onEvent({
+                type: "error",
+                message: fatalCliError,
+                sessionId: this._id ?? translator.sessionId,
+              } as ErrorEvent);
+              return;
+            }
+          }
+
+          const relayEvents = translateRelayEvents(parsed, translator, streamState);
+
+          if (translator.sessionId && !this._id) {
+            this._id = translator.sessionId;
+          }
+
+          for (const event of relayEvents) {
+            if (event.type === "turn_complete") {
+              const tc = event as TurnCompleteEvent;
+              if (tc.sessionId && !this._id) {
+                this._id = tc.sessionId;
+              }
+            }
+            onEvent(event);
+          }
+        },
+      });
     } catch (error) {
       if (fatalCliError) {
-        yield {
+        onEvent({
           type: "error",
           message: fatalCliError,
           sessionId: this._id ?? translator.sessionId,
-        };
+        } as ErrorEvent);
         return;
       }
       throw error;
@@ -251,8 +336,19 @@ function normalizeInput(input: Input): { prompt: string; images: string[] } {
   return { prompt: promptParts.join("\n\n"), images };
 }
 
+type StreamedMessageState = {
+  textStreamed: boolean;
+  thinkingStreamed: boolean;
+};
+
 type StreamState = {
-  streamedMessageIds: Set<string>;
+  activeMessageId: string | null;
+  lastCompletedMessageId: string | null;
+  messages: Map<string, StreamedMessageState>;
+};
+
+type StreamProcessResult = {
+  structuredOutput: unknown | null;
 };
 
 type RawStreamEventEnvelope = ClaudeEvent & {
@@ -273,8 +369,27 @@ type RawStreamEventPayload = {
 
 function createStreamState(): StreamState {
   return {
-    streamedMessageIds: new Set<string>(),
+    activeMessageId: null,
+    lastCompletedMessageId: null,
+    messages: new Map<string, StreamedMessageState>(),
   };
+}
+
+function ensureStreamedMessageState(
+  streamState: StreamState,
+  messageId: string,
+): StreamedMessageState {
+  const existing = streamState.messages.get(messageId);
+  if (existing) {
+    return existing;
+  }
+
+  const nextState: StreamedMessageState = {
+    textStreamed: false,
+    thinkingStreamed: false,
+  };
+  streamState.messages.set(messageId, nextState);
+  return nextState;
 }
 
 function createAbortSignalBinding(
@@ -411,7 +526,7 @@ function extractFatalCliApiErrorFromStdoutEvent(
   return parts.join(" | ");
 }
 
-function noop(): void {}
+function noop(): void { }
 
 function translateRelayEvents(
   parsed: ClaudeEvent,
@@ -424,12 +539,8 @@ function translateRelayEvents(
 
   const relayEvents = translator.translate(parsed);
 
-  // Claude emits a final assistant snapshot after stream_event deltas.
-  // Keep tool-related events, but suppress duplicate text/thinking output.
-  if (parsed.type === "assistant" && hasStreamedMessage(parsed, streamState)) {
-    return relayEvents.filter(
-      (event) => event.type !== "text_delta" && event.type !== "thinking_delta",
-    );
+  if (parsed.type === "assistant") {
+    return suppressDuplicateAssistantSnapshot(parsed, relayEvents, streamState);
   }
 
   return relayEvents;
@@ -444,32 +555,91 @@ function translateStreamEvent(
   streamState: StreamState,
 ): RelayEvent[] {
   const event = raw.event;
-  if (!event || event.type !== "content_block_delta" || !event.delta) {
+  if (!event) {
     return [];
   }
 
-  const messageId = getStreamEventMessageId(event);
+  if (event.type === "message_start") {
+    const messageId = getMessageId(event.message);
+    if (messageId) {
+      streamState.activeMessageId = messageId;
+      ensureStreamedMessageState(streamState, messageId);
+    }
+    return [];
+  }
+
+  if (event.type === "message_stop") {
+    const messageId = resolveStreamEventMessageId(event, streamState);
+    if (messageId) {
+      ensureStreamedMessageState(streamState, messageId);
+      streamState.lastCompletedMessageId = messageId;
+      if (streamState.activeMessageId === messageId) {
+        streamState.activeMessageId = null;
+      }
+    }
+    return [];
+  }
+
+  if (event.type !== "content_block_delta" || !event.delta) {
+    return [];
+  }
+
+  const messageId = resolveStreamEventMessageId(event, streamState);
+  const messageState = messageId
+    ? ensureStreamedMessageState(streamState, messageId)
+    : null;
   const { delta } = event;
 
   if (delta.type === "text_delta") {
-    if (!delta.text) return [];
-    if (messageId) streamState.streamedMessageIds.add(messageId);
+    if (!delta.text) {
+      return [];
+    }
+    if (messageState) {
+      messageState.textStreamed = true;
+    }
     return [{ type: "text_delta", content: delta.text }];
   }
 
   if (delta.type === "thinking_delta") {
     const content = delta.thinking ?? delta.text ?? "";
-    if (!content) return [];
-    if (messageId) streamState.streamedMessageIds.add(messageId);
+    if (!content) {
+      return [];
+    }
+    if (messageState) {
+      messageState.thinkingStreamed = true;
+    }
     return [{ type: "thinking_delta", content }];
   }
 
   return [];
 }
 
-function hasStreamedMessage(raw: ClaudeEvent, streamState: StreamState): boolean {
-  const messageId = getMessageId(raw.message);
-  return messageId != null && streamState.streamedMessageIds.has(messageId);
+function suppressDuplicateAssistantSnapshot(
+  raw: ClaudeEvent,
+  relayEvents: RelayEvent[],
+  streamState: StreamState,
+): RelayEvent[] {
+  const messageId = getMessageId(raw.message) ?? streamState.lastCompletedMessageId;
+  if (!messageId) {
+    return relayEvents;
+  }
+
+  const messageState = streamState.messages.get(messageId);
+  if (!messageState) {
+    return relayEvents;
+  }
+
+  return relayEvents.filter((event) => {
+    if (event.type === "text_delta") {
+      return !messageState.textStreamed;
+    }
+
+    if (event.type === "thinking_delta") {
+      return !messageState.thinkingStreamed;
+    }
+
+    return true;
+  });
 }
 
 function getStreamEventMessageId(event: RawStreamEventPayload): string | null {
@@ -477,6 +647,13 @@ function getStreamEventMessageId(event: RawStreamEventPayload): string | null {
     return event.message_id;
   }
   return getMessageId(event.message);
+}
+
+function resolveStreamEventMessageId(
+  event: RawStreamEventPayload,
+  streamState: StreamState,
+): string | null {
+  return getStreamEventMessageId(event) ?? streamState.activeMessageId;
 }
 
 function getMessageId(message: unknown): string | null {

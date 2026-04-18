@@ -1,20 +1,19 @@
 import { ClaudeCode } from "../src/index.js";
+import { secrets } from "../.env.js";
 
-const authToken = "sk-kimi-SdeumX8pBP6fNHfoYZSUB1iY74nXtT8yUq1UXvfXAfBlhPhI1uRURAu4jguhid5u";
-const baseUrl = "https://api.kimi.com/coding/";
-
-if (!authToken) {
+if (!secrets.authToken || !secrets.baseUrl) {
   throw new Error(
-    "Missing KIMI_API_KEY. Export your Kimi API key before running this demo.",
+    "Missing authToken or baseUrl in .env.ts. Fill them before running this demo.",
   );
 }
 
 const claude = new ClaudeCode({
-  authToken,
-  baseUrl,
+  authToken: secrets.authToken,
+  baseUrl: secrets.baseUrl,
 });
 
 const session = claude.startSession({
+  model: "ep-20250827194109-gmcjr",
   cwd: import.meta.dirname,
   dangerouslySkipPermissions: true,
   rawEventLog: true,

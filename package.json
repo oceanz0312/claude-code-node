@@ -1,7 +1,18 @@
 {
-  "name": "@tiktok-fe/ttls-agent-sdk",
-  "version": "0.1.3-alpha.1",
+  "name": "claude-code-node",
+  "version": "0.0.1",
   "description": "TypeScript SDK for Claude Code CLI",
+  "keywords": [
+    "claude-code",
+    "claude",
+    "agent-sdk",
+    "cli-wrapper",
+    "anthropic",
+    "typescript",
+    "streaming",
+    "session-management"
+  ],
+  "author": "",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -14,31 +25,33 @@
     }
   },
   "files": [
-    "dist",
-    "src"
+    "dist"
   ],
   "scripts": {
-    "build": "bun run build:esm && bun run build:cjs && bun run build:types && bun run build:cjs-dts",
+    "build": "bun run clean && bun run build:esm && bun run build:cjs && bun run build:types && bun run build:cjs-dts",
     "build:esm": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external",
-    "build:cjs": "bun build ./src/index.ts --outfile ./dist/index.cjs --target node --format cjs",
+    "build:cjs": "bun build ./src/index.ts --outfile ./dist/index.cjs --target node --format cjs --packages external",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "build:cjs-dts": "printf 'export * from \"./index.js\";\\n' > dist/index.d.cts",
-    "check": "bun run typecheck && bun test",
-    "test": "bun test",
-    "test:coverage": "bun test --coverage",
+    "check": "bun run typecheck && bun run test:unit && bun run test:e2e",
+    "test:unit": "bun test tests/unit",
+    "test:e2e": "bun test --timeout 180000 tests/e2e/cases",
+    "test:coverage": "bun test --coverage tests/unit",
     "typecheck": "tsc --noEmit",
     "verify": "bun run clean && bun run build && bun run check",
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.100",
     "claude-code-parser": "^0.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "terser": "^5.46.1",
     "typescript": "^5.9.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "license": "MIT"
 }
