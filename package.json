@@ -38,7 +38,7 @@
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "build:cjs-dts": "printf 'export * from \"./index.js\";\\n' > dist/index.d.cts",
     "check": "bun run typecheck && bun test",
-    "test": "bun test",
+    "test": "bun test tests/session.test.ts tests/exec.test.ts",
     "test:e2e": "bun test --timeout 180000 tests/e2e/cases",
     "test:coverage": "bun test --coverage",
     "typecheck": "tsc --noEmit",
