@@ -20,7 +20,7 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - run: bun install --frozen-lockfile
+      - run: npm ci
 
       - run: bun run verify
 

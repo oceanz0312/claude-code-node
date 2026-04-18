@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: "20"
 
-      - run: bun install --frozen-lockfile
+      - run: npm ci
 
       - name: Typecheck & Unit Tests
         run: bun run clean && bun run build && bun run check
