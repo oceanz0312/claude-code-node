@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
-import { ClaudeCodeExec } from "../../src/exec.js";
-import type { RawClaudeEvent, SessionOptions } from "../../src/options.js";
+import { ClaudeCodeExec } from "../../src/exec";
+import type { RawClaudeEvent, SessionOptions } from "../../src/options";
 
 const FAKE_CLAUDE = path.resolve(
   import.meta.dirname,

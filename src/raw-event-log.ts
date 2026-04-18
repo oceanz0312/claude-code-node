@@ -2,7 +2,7 @@ import { createWriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { once } from "node:events";
 import path from "node:path";
-import type { RawClaudeEvent } from "./options.js";
+import type { RawClaudeEvent } from "./options";
 
 export type RawEventLogOption = boolean | string | undefined;
 

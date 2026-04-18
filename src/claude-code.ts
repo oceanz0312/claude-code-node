@@ -1,6 +1,6 @@
-import type { ClaudeCodeOptions, SessionOptions } from "./options.js";
-import { ClaudeCodeExec } from "./exec.js";
-import { Session } from "./session.js";
+import type { ClaudeCodeOptions, SessionOptions } from "./options";
+import { ClaudeCodeExec } from "./exec";
+import { Session } from "./session";
 
 /**
  * ClaudeCode is the main entry point for the SDK.

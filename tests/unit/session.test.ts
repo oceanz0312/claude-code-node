@@ -1,9 +1,9 @@
 import { describe, test, expect } from "bun:test";
-import { ClaudeCode } from "../../src/claude-code.js";
-import { Session } from "../../src/session.js";
-import { createRawEventLogger } from "../../src/raw-event-log.js";
+import { ClaudeCode } from "../../src/claude-code";
+import { Session } from "../../src/session";
+import { createRawEventLogger } from "../../src/raw-event-log";
 import type { RelayEvent } from "claude-code-parser";
-import type { RawClaudeEvent } from "../../src/options.js";
+import type { RawClaudeEvent } from "../../src/options";
 import path from "node:path";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

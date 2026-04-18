@@ -3,8 +3,8 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { extname } from "node:path";
 import readline from "node:readline";
-import type { RawClaudeEvent, SessionOptions } from "./options.js";
-import type { RawEventLogger } from "./raw-event-log.js";
+import type { RawClaudeEvent, SessionOptions } from "./options";
+import type { RawEventLogger } from "./raw-event-log";
 
 type ExecInputItem =
   | { type: "text"; text: string }

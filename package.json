@@ -31,17 +31,15 @@
     "dist"
   ],
   "scripts": {
-    "build": "bun run clean && bun run build:esm && bun run build:cjs && bun run build:types && bun run build:cjs-dts && bun run build:obfuscate",
-    "build:esm": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external --minify",
-    "build:cjs": "bun build ./src/index.ts --outfile ./dist/index.cjs --target node --format cjs --packages external --minify",
-    "build:obfuscate": "terser dist/index.js --compress --mangle toplevel --module -o dist/index.js && terser dist/index.cjs --compress --mangle toplevel -o dist/index.cjs",
+    "build": "bun run clean && bun run build:esm && bun run build:cjs && bun run build:types && bun run build:cjs-dts",
+    "build:esm": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external",
+    "build:cjs": "bun build ./src/index.ts --outfile ./dist/index.cjs --target node --format cjs --packages external",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "build:cjs-dts": "printf 'export * from \"./index.js\";\\n' > dist/index.d.cts",
-    "check": "bun run typecheck && bun run test",
-    "test": "bun run test:unit && bun run test:e2e",
-    "test:unit": "bun test --timeout 180000 tests/unit",
+    "check": "bun run typecheck && bun run test:unit && bun run test:e2e",
+    "test:unit": "bun test tests/unit",
     "test:e2e": "bun test --timeout 180000 tests/e2e/cases",
-    "test:coverage": "bun test --timeout 180000 --coverage tests/unit",
+    "test:coverage": "bun test --coverage tests/unit",
     "typecheck": "tsc --noEmit",
     "verify": "bun run clean && bun run build && bun run check",
     "clean": "rm -rf dist"

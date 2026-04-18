@@ -10,9 +10,9 @@ import type {
   SessionOptions,
   TurnOptions,
   RawClaudeEvent,
-} from "./options.js";
-import { ClaudeCodeExec } from "./exec.js";
-import { createRawEventLogger } from "./raw-event-log.js";
+} from "./options";
+import { ClaudeCodeExec } from "./exec";
+import { createRawEventLogger } from "./raw-event-log";
 
 // ─── Input types ─────────────────────────────────────────────────────────────
 
