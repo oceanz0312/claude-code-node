@@ -3,6 +3,5 @@ dist/
 logs/
 *.tsbuildinfo
 .DS_Store
-tests/e2e/local.secrets.ts
 tests/e2e/artifacts/
-demo
+.env.ts

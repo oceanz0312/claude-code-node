@@ -56,7 +56,7 @@ async function requireAuthModes(): Promise<AuthMode[]> {
 
   if (configState.authModes.length === 0) {
     throw new Error(
-      "No real E2E auth path is configured. Fill apiKey or authToken + baseUrl in tests/e2e/local.secrets.ts before running bun run test:e2e.",
+      "No real E2E auth path is configured. Fill apiKey or authToken + baseUrl in .env.ts before running bun run test:e2e.",
     );
   }
 
@@ -65,7 +65,7 @@ async function requireAuthModes(): Promise<AuthMode[]> {
 
 if (configState.error) {
   describe("Real Claude CLI E2E setup", () => {
-    test("requires tests/e2e/local.secrets.ts", () => {
+    test("requires .env.ts", () => {
       throw configState.error;
     });
   });

@@ -1,8 +1,10 @@
 import { ClaudeCode } from "../src/index.js";
+import { secrets } from "../.env.js";
 
 const claude = new ClaudeCode({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-  baseUrl: process.env.ANTHROPIC_BASE_URL,
+  ...(secrets.apiKey ? { apiKey: secrets.apiKey } : {}),
+  ...(secrets.authToken ? { authToken: secrets.authToken } : {}),
+  ...(secrets.baseUrl ? { baseUrl: secrets.baseUrl } : {}),
 });
 
 const session = claude.startSession({

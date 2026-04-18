@@ -1,4 +1,4 @@
-export const e2eSecrets = {
+export const secrets = {
   // Optional: defaults to "sonnet" when omitted.
   model: "sonnet",
 
@@ -10,4 +10,4 @@ export const e2eSecrets = {
   baseUrl: "",
 } as const;
 
-export default e2eSecrets;
+export default secrets;

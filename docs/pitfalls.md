@@ -1,6 +1,6 @@
 # 闭坑指南
 
-本文件记录使用 `@tiktok-fe/ttls-agent-sdk` 和 Claude Code CLI 时已经踩过、且容易反复踩到的重大问题。
+本文件记录使用 `claude-code-node` 和 Claude Code CLI 时已经踩过、且容易反复踩到的重大问题。
 
 ## 坑 1：`settingSources` 不能包含全局 `user`，否则传入的 `env` 可能失效
 

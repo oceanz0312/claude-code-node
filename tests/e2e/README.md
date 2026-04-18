@@ -4,7 +4,7 @@
 
 ## Setup
 
-1. Copy `tests/e2e/local.secrets.example.ts` to `tests/e2e/local.secrets.ts`
+1. Copy `.env.example.ts` to `.env.ts` in the repo root
 2. Fill in at least one credential path:
    - `apiKey` for direct Anthropic API auth
    - `authToken` and `baseUrl` for gateway auth
@@ -18,5 +18,5 @@ bun run test:e2e
 
 - Tests load the SDK from `src/index.ts`, not from `dist/`.
 - Credentials are passed directly to `new ClaudeCode({...})` in the test harness.
-- `tests/e2e/local.secrets.ts` and `tests/e2e/artifacts/` are gitignored.
+- `.env.ts` and `tests/e2e/artifacts/` are gitignored.
 - Each case writes transcripts and raw logs into `tests/e2e/artifacts/<run-id>/<case-name>/`.
