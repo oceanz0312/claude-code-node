@@ -4,5 +4,5 @@ logs/
 *.tsbuildinfo
 .DS_Store
 tests/e2e/artifacts/
-.env.ts
+.env
 agent_logs/
