@@ -33,7 +33,7 @@
   "scripts": {
     "build": "bun run clean && bun run build:esm && bun run build:cjs && bun run build:types && bun run build:cjs-dts && bun run build:obfuscate",
     "build:esm": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external --minify",
-    "build:cjs": "bun build ./src/index.ts --outfile ./dist/index.cjs --target node --format cjs --minify",
+    "build:cjs": "bun build ./src/index.ts --outfile ./dist/index.cjs --target node --format cjs --packages external --minify",
     "build:obfuscate": "terser dist/index.js --compress --mangle toplevel --module -o dist/index.js && terser dist/index.cjs --compress --mangle toplevel -o dist/index.cjs",
     "build:types": "tsc --emitDeclarationOnly --outDir dist",
     "build:cjs-dts": "printf 'export * from \"./index.js\";\\n' > dist/index.d.cts",
