@@ -22,7 +22,7 @@ export type E2EConfig = {
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 const artifactRoot = path.resolve(import.meta.dirname, "artifacts");
-const secretsPath = path.resolve(import.meta.dirname, "local.secrets.ts");
+const secretsPath = path.resolve(repoRoot, ".env.ts");
 
 let cachedConfig: Promise<E2EConfig> | null = null;
 
@@ -41,7 +41,7 @@ export function getClientOptions(
   if (authMode === "api-key") {
     if (!secrets.apiKey) {
       throw new Error(
-        `tests/e2e requires e2eSecrets.apiKey in ${secretsPath} for api-key cases.`,
+        `tests/e2e requires secrets.apiKey in ${secretsPath} for api-key cases.`,
       );
     }
 
@@ -50,7 +50,7 @@ export function getClientOptions(
 
   if (!secrets.authToken || !secrets.baseUrl) {
     throw new Error(
-      `tests/e2e requires both e2eSecrets.authToken and e2eSecrets.baseUrl in ${secretsPath} for auth-token cases.`,
+      `tests/e2e requires both secrets.authToken and secrets.baseUrl in ${secretsPath} for auth-token cases.`,
     );
   }
 
@@ -80,18 +80,18 @@ async function loadConfigInternal(): Promise<E2EConfig> {
     throw new Error(
       [
         `Missing ${secretsPath}.`,
-        "Create it from tests/e2e/local.secrets.example.ts before running bun run test:e2e.",
+        "Create it from .env.example.ts before running bun run test:e2e.",
       ].join(" "),
     );
   }
 
   const moduleUrl = pathToFileURL(secretsPath).href;
   const loaded = (await import(moduleUrl)) as {
-    e2eSecrets?: unknown;
+    secrets?: unknown;
     default?: unknown;
   };
 
-  const candidate = loaded.e2eSecrets ?? loaded.default;
+  const candidate = loaded.secrets ?? loaded.default;
   const secrets = normalizeSecrets(candidate);
 
   return {
@@ -112,7 +112,7 @@ async function loadConfigInternal(): Promise<E2EConfig> {
 function normalizeSecrets(candidate: unknown): E2ESecrets {
   if (!candidate || typeof candidate !== "object") {
     throw new Error(
-      `${secretsPath} must export an object named e2eSecrets (or default export).`,
+      `${secretsPath} must export an object named secrets (or default export).`,
     );
   }
 

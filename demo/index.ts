@@ -1,9 +1,15 @@
 import * as readline from "node:readline";
 import { ClaudeCode } from "../src/index.js";
+import { secrets } from "../.env.js";
 
-const claude = new ClaudeCode();
+const claude = new ClaudeCode({
+  ...(secrets.apiKey ? { apiKey: secrets.apiKey } : {}),
+  ...(secrets.authToken ? { authToken: secrets.authToken } : {}),
+  ...(secrets.baseUrl ? { baseUrl: secrets.baseUrl } : {}),
+});
 
 const session = claude.startSession({
+  model: secrets.model || "sonnet",
   dangerouslySkipPermissions: true,
 });
 

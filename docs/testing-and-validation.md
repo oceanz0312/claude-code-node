@@ -90,7 +90,7 @@ bun run test:e2e
 - 需要验证图片输入、流式输出和关键 Session 行为
 - 需要保留完整终端 transcript 与 raw event 产物
 
-运行前需要准备 `tests/e2e/local.secrets.ts`，具体说明见 `tests/e2e/README.md`。
+运行前需要准备根目录的 `.env.ts`，具体说明见 `tests/e2e/README.md`。
 
 ### 覆盖率观察
 

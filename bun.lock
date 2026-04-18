@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@tiktok-fe/claude-sdk",
+      "name": "claude-code-node",
       "dependencies": {
         "claude-code-parser": "^0.1.1",
       },
