@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck & Unit Tests
+        run: bun run clean && bun run build && bun run check
+
+      - name: E2E Tests
+        run: bun run test:e2e
+        env:
+          E2E_AUTH_TOKEN: ${{ secrets.E2E_AUTH_TOKEN }}
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}

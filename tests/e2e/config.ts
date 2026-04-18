@@ -76,23 +76,27 @@ export async function listAvailableAuthModes(): Promise<AuthMode[]> {
 }
 
 async function loadConfigInternal(): Promise<E2EConfig> {
-  if (!existsSync(secretsPath)) {
+  const envSecrets = loadSecretsFromEnv();
+
+  let secrets: E2ESecrets;
+  if (envSecrets) {
+    secrets = envSecrets;
+  } else if (existsSync(secretsPath)) {
+    const moduleUrl = pathToFileURL(secretsPath).href;
+    const loaded = (await import(moduleUrl)) as {
+      secrets?: unknown;
+      default?: unknown;
+    };
+    const candidate = loaded.secrets ?? loaded.default;
+    secrets = normalizeSecrets(candidate);
+  } else {
     throw new Error(
       [
-        `Missing ${secretsPath}.`,
-        "Create it from .env.example.ts before running bun run test:e2e.",
+        `Missing ${secretsPath} and no E2E_AUTH_TOKEN / E2E_API_KEY env vars found.`,
+        "Either set env vars or create .env.ts from .env.example.ts before running bun run test:e2e.",
       ].join(" "),
     );
   }
-
-  const moduleUrl = pathToFileURL(secretsPath).href;
-  const loaded = (await import(moduleUrl)) as {
-    secrets?: unknown;
-    default?: unknown;
-  };
-
-  const candidate = loaded.secrets ?? loaded.default;
-  const secrets = normalizeSecrets(candidate);
 
   return {
     repoRoot,
@@ -107,6 +111,17 @@ async function loadConfigInternal(): Promise<E2EConfig> {
       dangerouslySkipPermissions: true,
     },
   };
+}
+
+function loadSecretsFromEnv(): E2ESecrets | null {
+  const authToken = getOptionalString(process.env.E2E_AUTH_TOKEN);
+  const baseUrl = getOptionalString(process.env.E2E_BASE_URL);
+  const apiKey = getOptionalString(process.env.E2E_API_KEY);
+  const model = getOptionalString(process.env.E2E_MODEL);
+
+  if (!authToken && !apiKey) return null;
+
+  return { model, apiKey, authToken, baseUrl };
 }
 
 function normalizeSecrets(candidate: unknown): E2ESecrets {
