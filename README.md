@@ -528,7 +528,7 @@ Real end-to-end tests against the Claude Code CLI are included:
 
 ```bash
 # 1. Copy the example env file
-cp .env.example.ts .env.ts
+cp .env.example .env
 
 # 2. Fill in at least one auth method (apiKey, or authToken + baseUrl)
 

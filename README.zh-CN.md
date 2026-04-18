@@ -528,7 +528,7 @@ const session = claude.startSession({
 
 ```bash
 # 1. 复制示例环境文件
-cp .env.example.ts .env.ts
+cp .env.example .env
 
 # 2. 填写至少一种认证方式（apiKey，或 authToken + baseUrl）
 
