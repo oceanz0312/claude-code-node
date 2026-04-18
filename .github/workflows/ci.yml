@@ -4,7 +4,6 @@ on:
   pull_request:
     branches: [master]
   push:
-    branches: [feat/open_source]
 
 jobs:
   test:
