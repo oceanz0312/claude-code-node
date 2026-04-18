@@ -39,9 +39,9 @@
     "build:cjs-dts": "printf 'export * from \"./index.js\";\\n' > dist/index.d.cts",
     "check": "bun run typecheck && bun run test",
     "test": "bun run test:unit && bun run test:e2e",
-    "test:unit": "bun test --timeout 180000 tests/session.test.ts tests/exec.test.ts",
+    "test:unit": "bun test --timeout 180000 tests/unit",
     "test:e2e": "bun test --timeout 180000 tests/e2e/cases",
-    "test:coverage": "bun test --timeout 180000 --coverage tests/session.test.ts tests/exec.test.ts",
+    "test:coverage": "bun test --timeout 180000 --coverage tests/unit",
     "typecheck": "tsc --noEmit",
     "verify": "bun run clean && bun run build && bun run check",
     "clean": "rm -rf dist"

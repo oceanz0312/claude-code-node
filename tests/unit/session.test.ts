@@ -1,9 +1,11 @@
 import { describe, test, expect } from "bun:test";
-import { ClaudeCode } from "../src/claude-code.js";
+import { ClaudeCode } from "../../src/claude-code.js";
+import { Session } from "../../src/session.js";
+import { createRawEventLogger } from "../../src/raw-event-log.js";
 import type { RelayEvent } from "claude-code-parser";
-import type { RawClaudeEvent } from "../src/options.js";
+import type { RawClaudeEvent } from "../../src/options.js";
 import path from "node:path";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 const FAKE_CLAUDE = path.resolve(
@@ -15,6 +17,88 @@ const STDOUT_API_RETRY_AUTH_PROMPT = "__stdout_api_retry_auth__";
 
 function createTestClient(options: ConstructorParameters<typeof ClaudeCode>[0] = {}) {
   return new ClaudeCode({ cliPath: FAKE_CLAUDE, ...options });
+}
+
+class DelayedErrorExec {
+  private delayMs: number;
+  private error: Error;
+
+  constructor(error: Error, delayMs = 10) {
+    this.error = error;
+    this.delayMs = delayMs;
+  }
+
+  async run(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    throw this.error;
+  }
+}
+
+class AwaitAbortExec {
+  private resolveStarted!: () => void;
+  public readonly started: Promise<void>;
+  public signal: AbortSignal | undefined;
+
+  constructor() {
+    this.started = new Promise((resolve) => {
+      this.resolveStarted = resolve;
+    });
+  }
+
+  async run(args: { signal?: AbortSignal }): Promise<void> {
+    this.signal = args.signal;
+    this.resolveStarted();
+
+    if (!args.signal) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      if (args.signal?.aborted) {
+        resolve();
+        return;
+      }
+
+      args.signal?.addEventListener("abort", () => resolve(), { once: true });
+    });
+  }
+}
+
+class ManualAbortSignal extends EventTarget {
+  public aborted = false;
+  public reason: unknown = undefined;
+  public addCount = 0;
+  public removeCount = 0;
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: AddEventListenerOptions | boolean,
+  ): void {
+    if (type === "abort") {
+      this.addCount += 1;
+    }
+
+    super.addEventListener(type, listener, options);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: EventListenerOptions | boolean,
+  ): void {
+    if (type === "abort") {
+      this.removeCount += 1;
+    }
+
+    super.removeEventListener(type, listener, options);
+  }
+
+  abort(reason?: unknown): void {
+    this.aborted = true;
+    this.reason = reason;
+    this.dispatchEvent(new Event("abort"));
+  }
 }
 
 describe("Session.run()", () => {
@@ -281,7 +365,7 @@ describe("Structured input", () => {
     const rawStdoutLines: string[] = [];
     const imagePath = path.resolve(
       import.meta.dirname,
-      "e2e/fixtures/images/red-square.png",
+      "../e2e/fixtures/images/red-square.png",
     );
 
     await session.run(
@@ -436,6 +520,194 @@ describe("Raw Claude events", () => {
       expect(eventTypes).toContain("stderr_line");
       expect(eventTypes).toContain("exit");
     } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Session internal branches", () => {
+  test("rejects a pending streamed iterator when processing fails", async () => {
+    const session = new Session(
+      new DelayedErrorExec(new Error("delayed stream failure")) as never,
+      {},
+      {},
+    );
+
+    const { events } = await session.runStreamed("hello");
+    const iterator = events[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).rejects.toThrow("delayed stream failure");
+  });
+
+  test("merges abort signals without a reason and cleans up listeners", async () => {
+    const exec = new AwaitAbortExec();
+    const session = new Session(exec as never, {}, {});
+    const externalSignal = new ManualAbortSignal();
+
+    const runPromise = session.run("hello", {
+      signal: externalSignal as never,
+      failFastOnCliApiError: true,
+    });
+
+    await exec.started;
+    expect(externalSignal.addCount).toBe(1);
+
+    externalSignal.abort();
+
+    const turn = await runPromise;
+    expect(turn.finalResponse).toBe("");
+    expect(turn.events).toEqual([]);
+    expect(exec.signal?.aborted).toBe(true);
+    expect(externalSignal.removeCount).toBe(1);
+  });
+
+  test("preserves abort reasons when merging abort signals", async () => {
+    const exec = new AwaitAbortExec();
+    const session = new Session(exec as never, {}, {});
+    const externalSignal = new ManualAbortSignal();
+
+    const runPromise = session.run("hello", {
+      signal: externalSignal as never,
+      failFastOnCliApiError: true,
+    });
+
+    await exec.started;
+    externalSignal.abort("manual-stop");
+
+    await runPromise;
+
+    expect(
+      (exec.signal as AbortSignal & { reason?: unknown }).reason,
+    ).toBe("manual-stop");
+  });
+});
+
+describe("Raw event logger", () => {
+  test("rejects relative rawEventLog paths", async () => {
+    await expect(createRawEventLogger("relative/raw-events")).rejects.toThrow(
+      'rawEventLog path must be an absolute path, got: "relative/raw-events"',
+    );
+  });
+
+  test("uses the default agent_logs directory and serializes process errors", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "agent-sdk-default-log-"));
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(tempDir);
+
+      const logger = await createRawEventLogger(true);
+      logger.log({
+        type: "process_error",
+        error: new Error("raw logger boom"),
+      });
+      await logger.close();
+      logger.log({ type: "spawn", command: "ignored", args: [] });
+      await logger.close();
+
+      const logDir = path.join(tempDir, "agent_logs");
+      const files = await readdir(logDir);
+      expect(files.length).toBe(1);
+
+      const logText = await readFile(path.join(logDir, files[0]!), "utf8");
+      const [record] = logText
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as {
+          timestamp: string;
+          event: {
+            type: string;
+            error?: { name: string; message: string; stack?: string };
+          };
+        });
+
+      expect(typeof record?.timestamp).toBe("string");
+      expect(record?.event.type).toBe("process_error");
+      expect(record?.event.error?.name).toBe("Error");
+      expect(record?.event.error?.message).toBe("raw logger boom");
+      expect(record?.event.error?.stack).toContain("raw logger boom");
+    } finally {
+      process.chdir(originalCwd);
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("waits for drain before closing after a backpressured write", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "agent-sdk-drain-log-"));
+
+    try {
+      const logger = await createRawEventLogger(tempDir);
+      logger.log({
+        type: "stderr_chunk",
+        chunk: "x".repeat(1024 * 1024),
+      });
+      await logger.close();
+
+      const files = await readdir(tempDir);
+      expect(files.length).toBe(1);
+
+      const logText = await readFile(path.join(tempDir, files[0]!), "utf8");
+      expect(logText).toContain('"type":"stderr_chunk"');
+      expect(logText.length).toBeGreaterThan(1024 * 1024);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("rethrows fatal stream errors captured before close completes", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "agent-sdk-close-error-"));
+    const RealDate = Date;
+    const realRandom = Math.random;
+
+    class FixedDate extends Date {
+      constructor(...args: ConstructorParameters<typeof Date>) {
+        if (args.length === 0) {
+          super("2026-01-02T03:04:05.678Z");
+          return;
+        }
+
+        super(args[0]);
+      }
+
+      static now(): number {
+        return new RealDate("2026-01-02T03:04:05.678Z").valueOf();
+      }
+    }
+
+    try {
+      globalThis.Date = FixedDate as DateConstructor;
+      Math.random = () => 0.123456789;
+
+      const randomSuffix = (0.123456789).toString(36).slice(2, 8);
+      const blockedPath = path.join(
+        tempDir,
+        `claude-raw-events-2026-01-02T03-04-05-678Z-${process.pid}-${randomSuffix}.ndjson`,
+      );
+      await mkdir(blockedPath, { recursive: true });
+
+      const logger = await createRawEventLogger(tempDir);
+      logger.log({ type: "spawn", command: "claude", args: [] });
+
+      await expect(logger.close()).rejects.toThrow("EISDIR");
+    } finally {
+      globalThis.Date = RealDate;
+      Math.random = realRandom;
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("throws close errors when the underlying stream cannot open", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "agent-sdk-error-log-"));
+
+    try {
+      await chmod(tempDir, 0o500);
+
+      const logger = await createRawEventLogger(tempDir);
+      logger.log({ type: "spawn", command: "claude", args: [] });
+
+      await expect(logger.close()).rejects.toThrow();
+    } finally {
+      await chmod(tempDir, 0o700).catch(() => {});
       await rm(tempDir, { recursive: true, force: true });
     }
   });
