@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/claude-code-node.svg)](https://www.npmjs.com/package/claude-code-node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
+[![Node.js >= 22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
 > A TypeScript SDK for programmatically driving the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code).
@@ -65,7 +65,7 @@
 
 ## Prerequisites
 
-- Node.js >= 18
+- Node.js >= 22
 - Claude Code CLI installed and `claude` available on your `PATH` (or specify `cliPath` explicitly)
 
 ---

@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/claude-code-node.svg)](https://www.npmjs.com/package/claude-code-node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
+[![Node.js >= 22](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
 > 用于以编程方式驱动 [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) 的 TypeScript SDK。
@@ -65,7 +65,7 @@
 
 ## 前置要求
 
-- Node.js >= 18
+- Node.js >= 22
 - 已安装 Claude Code CLI，且 `claude` 可在 `PATH` 中找到（或通过 `cliPath` 显式指定路径）
 
 ---
