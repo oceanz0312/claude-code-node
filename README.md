@@ -325,7 +325,7 @@ const turn = await session.run([
 ]);
 ```
 
-SDK 会自动把多段文本拼接成 prompt，并通过 `--image` 把图片参数传给 Claude Code CLI。
+SDK 会自动把多段文本拼接成 prompt，并通过 stdin 以 base64 编码将图片内联传给 Claude Code CLI（使用 `stream-json` 输入格式）。
 
 ### 7. 中断执行
 
@@ -468,6 +468,7 @@ type Turn = {
   finalResponse: string;
   usage: TurnUsage | null;
   sessionId: string | null;
+  structuredOutput: unknown | null;
 };
 ```
 
@@ -479,12 +480,13 @@ type Turn = {
 | `finalResponse` | `string` | 所有 `text_delta` 拼接后的最终文本 |
 | `usage` | `TurnUsage \| null` | token 与花费信息 |
 | `sessionId` | `string \| null` | 当前 turn 对应的会话 ID |
+| `structuredOutput` | `unknown \| null` | 当 `jsonSchema` 指定时，CLI 返回的结构化输出 |
 
 ### `StreamedTurn`
 
 ```typescript
 type StreamedTurn = {
-  events: AsyncGenerator<RelayEvent>;
+  events: AsyncIterable<RelayEvent>;
 };
 ```
 
@@ -536,8 +538,12 @@ SDK 从 `claude-code-parser` 重新导出事件类型与解析工具，因此你
 | `appendSystemPrompt` | `string` | 在默认系统提示词后追加内容 |
 | `mcpConfig` | `string \| string[]` | MCP 配置文件路径 |
 | `strictMcpConfig` | `boolean` | 仅使用指定 MCP 配置 |
-| `effort` | `"low" \| "medium" \| "high" \| "max"` | 模型推理强度 |
+| `effort` | `Effort` | 模型推理强度 |
 | `fallbackModel` | `string` | 主模型拥塞时的回退模型 |
+| `jsonSchema` | `string \| object` | JSON Schema，启用后 CLI 返回结构化输出（结果在 `Turn.structuredOutput`） |
+| `sessionId` | `string` | 显式指定会话 UUID |
+| `forkSession` | `boolean` | 恢复会话时 fork 为新会话 |
+| `betas` | `string` | Beta API 头（传给 CLI `--betas`） |
 | `bare` | `boolean` | 跳过 hooks / plugins / MCP / CLAUDE.md 自动发现 |
 | `noSessionPersistence` | `boolean` | 不持久化 session |
 | `chrome` | `boolean` | 启用 Chrome 集成 |
@@ -562,6 +568,7 @@ type PermissionMode =
   | "default"
   | "acceptEdits"
   | "plan"
+  | "auto"
   | "dontAsk"
   | "bypassPermissions";
 ```
@@ -569,7 +576,7 @@ type PermissionMode =
 #### 推理强度：`Effort`
 
 ```typescript
-type Effort = "low" | "medium" | "high" | "max";
+type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 ```
 
 #### 动态子代理定义：`AgentDefinition`
@@ -579,8 +586,15 @@ type AgentDefinition = {
   description?: string;
   prompt?: string;
   tools?: string[];
+  allowedTools?: string[];
+  disallowedTools?: string[];
   model?: string;
+  effort?: Effort;
   maxTurns?: number;
+  permissionMode?: PermissionMode;
+  isolation?: "worktree";
+  initialPrompt?: string;
+  mcpServers?: Record<string, unknown>;
 };
 ```
 
@@ -752,6 +766,35 @@ tests/
 ## 闭坑指南
 
 重大踩坑记录已单独整理到 [docs/pitfalls.md](./docs/pitfalls.md)，避免 README 和排障文档长期重复维护。
+
+## 真实 E2E
+
+仓库内置了一个独立的真实 Claude CLI 端到端测试入口：
+
+```bash
+bun run test:e2e
+```
+
+这组测试会：
+
+- 直接从 `src/index.ts` 导入 SDK，对外 API 走真实执行链路
+- 使用项目 `node_modules` 里的 Claude Code CLI
+- 通过 `tests/e2e/local.secrets.ts` 中的 `apiKey` 或 `authToken + baseUrl` 直接构造 `new ClaudeCode({...})`
+- 把 `rawEventLog`、relay events、最终响应和终端摘要落到 `tests/e2e/artifacts/`
+- 包含本地图片输入的真实识别 case
+
+开始前先复制：
+
+```bash
+cp tests/e2e/local.secrets.example.ts tests/e2e/local.secrets.ts
+```
+
+然后填写至少一条认证路径：
+
+- `apiKey`
+- 或 `authToken` + `baseUrl`
+
+E2E 细节见 `tests/e2e/README.md`。
 
 ## 开发
 

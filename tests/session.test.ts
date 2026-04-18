@@ -271,6 +271,49 @@ describe("Structured input", () => {
 
     expect(turn.finalResponse).toBeTruthy();
   });
+
+  test("sends local_image items through stream-json stdin instead of --image", async () => {
+    const claude = createTestClient();
+    const session = claude.startSession({
+      dangerouslySkipPermissions: true,
+    });
+
+    const rawStdoutLines: string[] = [];
+    const imagePath = path.resolve(
+      import.meta.dirname,
+      "e2e/fixtures/images/red-square.png",
+    );
+
+    await session.run(
+      [
+        { type: "text", text: "__inspect_exec_options__" },
+        { type: "local_image", path: imagePath },
+      ],
+      {
+        onRawEvent: (event) => {
+          if (event.type === "stdout_line") {
+            rawStdoutLines.push(event.line);
+          }
+        },
+      },
+    );
+
+    const resultLine = rawStdoutLines.find(
+      (line) => JSON.parse(line).type === "result",
+    );
+    expect(resultLine).toBeDefined();
+
+    const inspection = JSON.parse(resultLine!).inspection as {
+      args: string[];
+      input: { imageCount: number; prompt: string; inputFormat: string | null };
+    };
+
+    expect(inspection.args).toContain("--input-format");
+    expect(inspection.args).not.toContain("--image");
+    expect(inspection.input.inputFormat).toBe("stream-json");
+    expect(inspection.input.imageCount).toBe(1);
+    expect(inspection.input.prompt).toBe("__inspect_exec_options__");
+  });
 });
 
 describe("AbortSignal", () => {
