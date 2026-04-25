@@ -1,0 +1,967 @@
+# claude-code-node
+
+> A TypeScript SDK that wraps the Claude Code CLI, letting you drive Claude Code programmatically from Node.js or Bun with a clean async API. It provides typed session management with automatic resume across turns, real-time streaming via AsyncIterable, structured output via JSON Schema, image input support, abort control with AbortSignal, and fail-fast API error detection. The SDK maps 35+ CLI flags to typed fields and includes dual-layer event handling (raw process events + semantic relay events) with built-in stream deduplication.
+
+## Installation
+
+Prerequisites: Node.js >= 22, Claude Code CLI installed (`claude` on PATH or specify `cliPath`).
+
+```bash
+# npm
+npm install claude-code-node
+
+# pnpm
+pnpm add claude-code-node
+
+# bun
+bun add claude-code-node
+```
+
+## Core Concepts
+
+### Architecture
+
+The SDK has three layers:
+
+1. **ClaudeCode** -- the entry point. Holds global configuration (CLI path, API credentials, env vars). Creates Session instances.
+2. **Session** -- represents a single conversation. Handles input normalization, event translation, and automatic `--resume` across turns. Exposes `run()` (buffered) and `runStreamed()` (streaming).
+3. **Translator** (from `claude-code-parser`) -- converts raw CLI NDJSON events into normalized, deduplicated `RelayEvent` objects.
+
+### Session Lifecycle
+
+- `startSession()` creates a fresh session. The first turn has no resume flag.
+- `resumeSession(id)` resumes an existing session by its ID.
+- `continueSession()` continues the most recent session using `--continue`.
+- After the first turn in any session, all subsequent `run()` / `runStreamed()` calls automatically pass `--resume <sessionId>`.
+
+### Event Model
+
+The SDK provides two event layers:
+
+- **RawClaudeEvent** -- low-level process events (spawn, stdin_closed, stdout_line, stderr_chunk, stderr_line, process_error, exit). Accessed via `TurnOptions.onRawEvent` callback.
+- **RelayEvent** -- high-level semantic events (text_delta, thinking_delta, tool_use, tool_result, session_meta, turn_complete, error). Accessed via `Turn.events` array or `StreamedTurn.events` async iterable.
+
+### Input Model
+
+Input can be:
+- A plain `string` (text prompt).
+- An array of `UserInput` objects mixing `{ type: "text", text: string }` and `{ type: "local_image", path: string }` for multimodal input.
+
+---
+
+## API Reference
+
+### Exports
+
+All public API is exported from the package entry point:
+
+```typescript
+import {
+  // Classes
+  ClaudeCode,
+  Session,
+
+  // Re-exported utilities from claude-code-parser
+  parseLine,
+  Translator,
+  extractContent,
+} from "claude-code-node";
+```
+
+Type-only exports:
+
+```typescript
+import type {
+  // SDK option types
+  ClaudeCodeOptions,
+  SessionOptions,
+  PermissionMode,
+  Effort,
+  RawClaudeEvent,
+  AgentDefinition,
+  TurnOptions,
+
+  // SDK result types
+  Input,
+  UserInput,
+  Turn,
+  TurnUsage,
+  RunResult,
+  StreamedTurn,
+  RunStreamedResult,
+
+  // Re-exported from claude-code-parser
+  RelayEvent,
+  TextDeltaEvent,
+  ThinkingDeltaEvent,
+  ToolUseEvent,
+  ToolResultEvent,
+  SessionMetaEvent,
+  TurnCompleteEvent,
+  ErrorEvent,
+  ClaudeEvent,
+  ClaudeMessage,
+  ClaudeContent,
+  ModelUsageEntry,
+} from "claude-code-node";
+```
+
+---
+
+### class ClaudeCode
+
+The main entry point. Construct with global options, then create sessions.
+
+```typescript
+constructor(options?: ClaudeCodeOptions)
+```
+
+#### Methods
+
+##### startSession(options?: SessionOptions): Session
+
+Create a new session. The first turn runs without `--resume`.
+
+##### resumeSession(sessionId: string, options?: SessionOptions): Session
+
+Resume an existing session by its ID. The first turn passes `--resume <sessionId>`.
+
+##### continueSession(options?: SessionOptions): Session
+
+Continue the most recent session in the working directory. The first turn passes `--continue`.
+
+---
+
+### type ClaudeCodeOptions
+
+Global options passed to the `ClaudeCode` constructor. All fields are optional.
+
+| Field       | Type                      | Description |
+|-------------|---------------------------|-------------|
+| cliPath     | string                    | Path to the `claude` CLI binary. Defaults to `"claude"` resolved from PATH, or auto-resolved from `@anthropic-ai/claude-code/cli.js` if installed. |
+| env         | Record<string, string>    | Environment variables for the CLI process. The SDK never inherits `process.env` implicitly. |
+| apiKey      | string                    | Merged into env as `ANTHROPIC_API_KEY`. |
+| authToken   | string                    | Merged into env as `ANTHROPIC_AUTH_TOKEN`. |
+| baseUrl     | string                    | Merged into env as `ANTHROPIC_BASE_URL`. |
+
+---
+
+### class Session
+
+Represents a single Claude conversation. Created via `ClaudeCode.startSession()`, `resumeSession()`, or `continueSession()`.
+
+#### Properties
+
+##### get id(): string | null
+
+The session ID. Populated after the first run from a `session_meta` or `turn_complete` event.
+
+#### Methods
+
+##### async run(input: Input, turnOptions?: TurnOptions): Promise<Turn>
+
+Execute a turn and return the completed result. Collects all events, assembles `finalResponse` from text_delta events, and extracts usage from the turn_complete event. Throws an `Error` if the turn produces an error event.
+
+##### async runStreamed(input: Input, turnOptions?: TurnOptions): Promise<StreamedTurn>
+
+Execute a turn and stream RelayEvents in real time. Returns immediately with an `AsyncIterable<RelayEvent>`. Events are yielded as they arrive from the CLI process.
+
+---
+
+### type SessionOptions
+
+Passed to `startSession()`, `resumeSession()`, or `continueSession()`. All fields are optional.
+
+#### Core
+
+| Field                  | Type     | Default | Description |
+|------------------------|----------|---------|-------------|
+| model                  | string   | --      | Model to use (e.g. `"claude-sonnet-4-6"`, `"sonnet"`, `"opus"`). |
+| cwd                    | string   | --      | Working directory for the CLI process. |
+| additionalDirectories  | string[] | --      | Extra directories the model can access. |
+| maxTurns               | number   | --      | Maximum number of agentic turns. |
+| maxBudgetUsd           | number   | --      | Maximum dollar spend for the session. |
+| effort                 | Effort   | --      | Reasoning effort level. |
+| fallbackModel          | string   | --      | Fallback model when primary is overloaded. |
+
+#### System Prompt
+
+| Field                  | Type   | Description |
+|------------------------|--------|-------------|
+| systemPrompt           | string | Replace the entire system prompt. |
+| systemPromptFile       | string | Load system prompt from a file (replaces default). |
+| appendSystemPrompt     | string | Append text to the default system prompt. |
+| appendSystemPromptFile | string | Append system prompt content from a file. |
+
+#### Permissions & Tools
+
+| Field                    | Type           | Description |
+|--------------------------|----------------|-------------|
+| dangerouslySkipPermissions | boolean      | Skip all permission prompts. Takes precedence over `permissionMode`. |
+| permissionMode           | PermissionMode | Permission mode for the session. |
+| allowedTools             | string[]       | Tools that execute without permission prompts. |
+| disallowedTools          | string[]       | Tools removed entirely. |
+| tools                    | string         | Restrict available tools (comma-separated, e.g. `"Bash,Edit,Read"`). |
+| permissionPromptTool     | string         | MCP tool for handling permission prompts in non-interactive mode. |
+
+#### Structured Output
+
+| Field      | Type             | Description |
+|------------|------------------|-------------|
+| jsonSchema | string or object | JSON Schema for structured output. Result is available in `Turn.structuredOutput`. |
+
+#### MCP & Plugins
+
+| Field           | Type               | Description |
+|-----------------|--------------------|-------------|
+| mcpConfig       | string or string[] | MCP server configuration file path(s). |
+| strictMcpConfig | boolean            | Only use MCP servers defined in `mcpConfig`. |
+| pluginDir       | string or string[] | Plugin directory path(s). |
+
+#### Sub-agents
+
+| Field  | Type                                     | Description |
+|--------|------------------------------------------|-------------|
+| agents | Record<string, AgentDefinition> or string | Define sub-agents inline or as a JSON string. |
+| agent  | string                                   | Specify which agent to use for this session. |
+
+#### Session & Debug
+
+| Field                               | Type              | Default | Description |
+|--------------------------------------|-------------------|---------|-------------|
+| sessionId                            | string            | --      | Explicit session UUID. |
+| forkSession                          | boolean           | --      | Fork the session when resuming (creates a new session ID). |
+| name                                 | string            | --      | Display name for the session. |
+| noSessionPersistence                 | boolean           | --      | Do not persist session to disk. |
+| bare                                 | boolean           | --      | Skip hooks, plugins, MCP, and CLAUDE.md auto-discovery. |
+| verbose                              | boolean           | true    | Enable verbose output. |
+| includePartialMessages               | boolean           | true    | Include partial streaming events. |
+| includeHookEvents                    | boolean           | --      | Include hook lifecycle events in output. |
+| rawEventLog                          | boolean or string | --      | Write NDJSON raw events to `./agent_logs/` (when `true`) or to a custom absolute path. |
+| debug                                | string or boolean | --      | Enable debug mode. String specifies category filter. |
+| debugFile                            | string            | --      | Debug log file path. |
+
+#### Other
+
+| Field                                | Type    | Description |
+|--------------------------------------|---------|-------------|
+| chrome                               | boolean | Enable/disable Chrome browser integration. |
+| worktree                             | string  | Run in an isolated git worktree. |
+| disableSlashCommands                 | boolean | Disable slash commands. |
+| excludeDynamicSystemPromptSections   | boolean | Exclude dynamic system prompt sections (improves cache hit rate). |
+| settings                             | string  | Additional settings file path or JSON string. |
+| settingSources                       | string  | Setting sources (e.g. `"user,project,local"`). Defaults to `""`. |
+| betas                                | string  | Beta API headers. |
+
+---
+
+### type TurnOptions
+
+Per-turn options passed to `session.run()` or `session.runStreamed()`. All fields are optional.
+
+| Field                  | Type                            | Description |
+|------------------------|---------------------------------|-------------|
+| signal                 | AbortSignal                     | Cancel the turn via AbortController. |
+| onRawEvent             | (event: RawClaudeEvent) => void | Callback for raw CLI process events (spawn, stdout, stderr, exit). |
+| failFastOnCliApiError  | boolean                         | Abort the CLI process and surface a synthesized error event as soon as a fatal CLI API error is detected. Useful for CI/CD where you want fast failure instead of waiting for retries. |
+
+---
+
+### type PermissionMode
+
+```typescript
+type PermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "plan"
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
+```
+
+---
+
+### type Effort
+
+```typescript
+type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+```
+
+---
+
+### type AgentDefinition
+
+Definition for a dynamic sub-agent.
+
+```typescript
+type AgentDefinition = {
+  description?: string;
+  prompt?: string;
+  tools?: string[];
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  model?: string;
+  effort?: Effort;
+  maxTurns?: number;
+  permissionMode?: PermissionMode;
+  isolation?: "worktree";
+  initialPrompt?: string;
+  mcpServers?: Record<string, unknown>;
+};
+```
+
+---
+
+### type Input
+
+```typescript
+type Input = string | UserInput[];
+```
+
+A prompt string, or an array of mixed text and image items.
+
+### type UserInput
+
+```typescript
+type UserInput =
+  | { type: "text"; text: string }
+  | { type: "local_image"; path: string };
+```
+
+---
+
+### type Turn
+
+The result of a single `session.run()` call.
+
+```typescript
+type Turn = {
+  events: RelayEvent[];
+  finalResponse: string;
+  usage: TurnUsage | null;
+  sessionId: string | null;
+  structuredOutput: unknown | null;
+};
+```
+
+| Field            | Type              | Description |
+|------------------|-------------------|-------------|
+| events           | RelayEvent[]      | All relay events emitted during the turn, in order. |
+| finalResponse    | string            | Concatenation of all `text_delta` content during the turn. |
+| usage            | TurnUsage or null | Token usage and cost info from the `turn_complete` event. |
+| sessionId        | string or null    | The session ID, captured from the turn_complete or session_meta event. |
+| structuredOutput | unknown or null   | Parsed structured output when `jsonSchema` is set in SessionOptions. |
+
+### type RunResult
+
+Alias for `Turn`.
+
+```typescript
+type RunResult = Turn;
+```
+
+---
+
+### type TurnUsage
+
+```typescript
+type TurnUsage = {
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  contextWindow?: number;
+};
+```
+
+---
+
+### type StreamedTurn
+
+The result of a single `session.runStreamed()` call.
+
+```typescript
+type StreamedTurn = {
+  events: AsyncIterable<RelayEvent>;
+};
+```
+
+Iterate over `events` with `for await...of` to receive events in real time.
+
+### type RunStreamedResult
+
+Alias for `StreamedTurn`.
+
+```typescript
+type RunStreamedResult = StreamedTurn;
+```
+
+---
+
+### RelayEvent Types
+
+`RelayEvent` is a discriminated union on the `type` field. Switch on `event.type` for full type narrowing.
+
+```typescript
+type RelayEvent =
+  | TextDeltaEvent
+  | ThinkingDeltaEvent
+  | ToolUseEvent
+  | ToolResultEvent
+  | SessionMetaEvent
+  | TurnCompleteEvent
+  | ErrorEvent;
+```
+
+#### TextDeltaEvent
+
+```typescript
+interface TextDeltaEvent {
+  type: "text_delta";
+  content: string;  // incremental assistant text chunk
+}
+```
+
+#### ThinkingDeltaEvent
+
+```typescript
+interface ThinkingDeltaEvent {
+  type: "thinking_delta";
+  content: string;  // incremental thinking/reasoning text chunk
+}
+```
+
+#### ToolUseEvent
+
+```typescript
+interface ToolUseEvent {
+  type: "tool_use";
+  toolUseId: string;   // unique ID for this tool invocation
+  toolName: string;     // name of the tool being called
+  input: string;        // tool input as a JSON string
+}
+```
+
+#### ToolResultEvent
+
+```typescript
+interface ToolResultEvent {
+  type: "tool_result";
+  toolUseId: string;   // matches the corresponding ToolUseEvent
+  output: string;       // tool execution output text
+  isError: boolean;     // whether the tool execution failed
+}
+```
+
+#### SessionMetaEvent
+
+```typescript
+interface SessionMetaEvent {
+  type: "session_meta";
+  model: string;  // model name for this session
+}
+```
+
+#### TurnCompleteEvent
+
+```typescript
+interface TurnCompleteEvent {
+  type: "turn_complete";
+  sessionId?: string;
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  contextWindow?: number;
+}
+```
+
+#### ErrorEvent
+
+```typescript
+interface ErrorEvent {
+  type: "error";
+  message: string;
+  sessionId?: string;
+}
+```
+
+---
+
+### RawClaudeEvent Types
+
+Low-level CLI process events, accessed via `TurnOptions.onRawEvent`.
+
+```typescript
+type RawClaudeEvent =
+  | { type: "spawn"; command: string; args: string[]; cwd?: string }
+  | { type: "stdin_closed" }
+  | { type: "stdout_line"; line: string }
+  | { type: "stderr_chunk"; chunk: string }
+  | { type: "stderr_line"; line: string }
+  | { type: "process_error"; error: Error }
+  | { type: "exit"; code: number | null; signal: NodeJS.Signals | null };
+```
+
+| Variant       | Description |
+|---------------|-------------|
+| spawn         | Emitted when the CLI process is spawned. Includes the command, args, and working directory. |
+| stdin_closed  | Emitted after input is written to stdin and the stream is closed. |
+| stdout_line   | Each NDJSON line from the CLI's stdout. |
+| stderr_chunk  | Raw stderr data chunks (may not be line-aligned). |
+| stderr_line   | Complete stderr lines (line-buffered). |
+| process_error | Emitted when the child process encounters a spawn error (e.g. binary not found). |
+| exit          | Emitted when the CLI process exits. Includes exit code and/or signal. |
+
+---
+
+### Raw Protocol Types (from claude-code-parser)
+
+These represent the wire format from Claude Code's `--output-format stream-json` NDJSON output.
+
+#### ClaudeEvent
+
+```typescript
+interface ClaudeEvent {
+  type: string;
+  subtype?: string;
+  message?: ClaudeMessage;
+  result?: unknown;            // double-encoded JSON string
+  session_id?: string;
+  model?: string;
+  tools?: string[];
+  duration_ms?: number;
+  duration_api_ms?: number;
+  cost_usd?: number;
+  total_cost_usd?: number;
+  is_error?: boolean;
+  num_turns?: number;
+  modelUsage?: Record<string, ModelUsageEntry>;
+  usage?: unknown;
+}
+```
+
+#### ClaudeMessage
+
+```typescript
+interface ClaudeMessage {
+  content: ClaudeContent[];
+  role?: string;
+  stop_reason?: string;
+}
+```
+
+#### ClaudeContent
+
+```typescript
+interface ClaudeContent {
+  type: string;
+  text?: string;           // text content or fallback for thinking blocks
+  thinking?: string;       // primary field for thinking blocks
+  id?: string;             // tool use ID
+  name?: string;           // tool name
+  input?: unknown;         // tool input (shape varies by tool)
+  content?: unknown;       // tool result content (string, array, or null)
+  tool_use_id?: string;    // back-reference to tool_use block
+  is_error?: boolean;      // whether tool result is an error
+}
+```
+
+#### ModelUsageEntry
+
+```typescript
+interface ModelUsageEntry {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  contextWindow: number;
+}
+```
+
+---
+
+### Re-exported Utilities (from claude-code-parser)
+
+#### parseLine(line: string): ClaudeEvent | null
+
+Parse a single NDJSON line from Claude Code's stdout into a typed `ClaudeEvent`. Returns `null` for empty lines or unparseable JSON.
+
+#### class Translator
+
+Translates raw `ClaudeEvent` objects into deduplicated `RelayEvent` arrays. Tracks content block indices to avoid re-emitting blocks already sent in previous `assistant` events (handles the `--verbose` mode cumulative snapshot problem).
+
+```typescript
+class Translator {
+  get sessionId(): string | undefined;
+  get model(): string | undefined;
+  reset(): void;
+  translate(raw: ClaudeEvent): RelayEvent[];
+}
+```
+
+| Member    | Description |
+|-----------|-------------|
+| sessionId | The session ID captured from the most recent `system/init` event. |
+| model     | The model name captured from the most recent `system/init` event. |
+| reset()   | Reset content index tracking. Call on new turn/session. |
+| translate(raw) | Convert a raw `ClaudeEvent` into zero or more `RelayEvent` objects. |
+
+#### extractContent(raw: unknown): string
+
+Handle the polymorphic `content` field in tool_result blocks. Accepts three shapes:
+- `string` -- returns as-is.
+- `Array<{ type: string; text: string }>` -- joins text fields with newline.
+- `null` / `undefined` -- returns empty string.
+
+---
+
+## Usage Examples
+
+### 1. Buffered mode (run and get full result)
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode({ apiKey: "sk-ant-..." });
+const session = claude.startSession({
+  model: "sonnet",
+  dangerouslySkipPermissions: true,
+});
+
+const turn = await session.run("Fix the failing tests in src/");
+console.log(turn.finalResponse);   // full assistant response text
+console.log(turn.sessionId);       // session ID for resuming later
+console.log(turn.usage);           // { costUsd, inputTokens, outputTokens, contextWindow }
+console.log(turn.events);          // RelayEvent[] array of all events
+```
+
+### 2. Streaming mode (real-time events)
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+const session = claude.startSession({ dangerouslySkipPermissions: true });
+
+const { events } = await session.runStreamed("Refactor the auth module");
+
+for await (const event of events) {
+  switch (event.type) {
+    case "text_delta":
+      process.stdout.write(event.content);
+      break;
+    case "thinking_delta":
+      console.log("[thinking]", event.content);
+      break;
+    case "tool_use":
+      console.log("[tool]", event.toolName, event.input);
+      break;
+    case "tool_result":
+      console.log("[result]", event.output);
+      break;
+    case "session_meta":
+      console.log("[model]", event.model);
+      break;
+    case "turn_complete":
+      console.log("[done] cost:", event.costUsd);
+      break;
+    case "error":
+      console.error("[error]", event.message);
+      break;
+  }
+}
+```
+
+### 3. Multi-turn conversation (automatic session resume)
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+const session = claude.startSession({ dangerouslySkipPermissions: true });
+
+const first = await session.run("Read the README and summarize it");
+console.log(first.finalResponse);
+
+// Subsequent calls automatically use --resume with the session ID
+const second = await session.run("Now translate it to Chinese");
+console.log(second.finalResponse);
+console.log(session.id);  // same session ID used across turns
+```
+
+### 4. Resume or continue an existing session
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+
+// Resume by explicit session ID
+const session = claude.resumeSession("existing-session-uuid", {
+  dangerouslySkipPermissions: true,
+});
+const turn = await session.run("Continue where we left off");
+
+// Or continue the most recent session in the working directory
+const session2 = claude.continueSession({
+  cwd: "/path/to/project",
+  dangerouslySkipPermissions: true,
+});
+const turn2 = await session2.run("What were we working on?");
+```
+
+### 5. Text + image input (multimodal)
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+const session = claude.startSession({ dangerouslySkipPermissions: true });
+
+const turn = await session.run([
+  { type: "text", text: "What UI issues do you see in this screenshot?" },
+  { type: "local_image", path: "/path/to/screenshot.png" },
+]);
+console.log(turn.finalResponse);
+```
+
+### 6. Structured output (JSON Schema)
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+const session = claude.startSession({
+  dangerouslySkipPermissions: true,
+  jsonSchema: {
+    type: "object",
+    properties: {
+      summary: { type: "string" },
+      tags: { type: "array", items: { type: "string" } },
+      severity: { type: "string", enum: ["low", "medium", "high"] },
+    },
+    required: ["summary", "tags", "severity"],
+  },
+});
+
+const turn = await session.run("Analyze the error handling in src/index.ts");
+console.log(turn.structuredOutput);
+// { summary: "...", tags: ["error-handling", ...], severity: "medium" }
+```
+
+### 7. Custom system prompt
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+
+// Replace the entire system prompt
+const session = claude.startSession({
+  systemPrompt: "You are a code reviewer. Only report bugs, no style suggestions.",
+  dangerouslySkipPermissions: true,
+});
+
+// Or append to the default system prompt
+const session2 = claude.startSession({
+  appendSystemPrompt: "Always respond in JSON format.",
+  dangerouslySkipPermissions: true,
+});
+```
+
+### 8. Sub-agents
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+const session = claude.startSession({
+  dangerouslySkipPermissions: true,
+  agents: {
+    reviewer: {
+      description: "Reviews code for bugs and security issues",
+      prompt: "You are a senior code reviewer. Focus on correctness and security.",
+      model: "sonnet",
+      allowedTools: ["Read", "Glob", "Grep"],
+      maxTurns: 5,
+    },
+    writer: {
+      description: "Writes implementation code",
+      prompt: "You are an expert TypeScript developer.",
+      model: "sonnet",
+      allowedTools: ["Read", "Edit", "Write", "Bash"],
+    },
+  },
+});
+
+const turn = await session.run("Review src/session.ts for potential issues");
+```
+
+### 9. MCP server configuration
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+const session = claude.startSession({
+  mcpConfig: "/path/to/mcp-servers.json",
+  strictMcpConfig: true,
+  dangerouslySkipPermissions: true,
+});
+
+const turn = await session.run("Query the database for recent users");
+```
+
+### 10. Abort a turn
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+const session = claude.startSession({ dangerouslySkipPermissions: true });
+
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 30_000); // 30s timeout
+
+try {
+  const turn = await session.run("Long running analysis...", {
+    signal: controller.signal,
+  });
+  console.log(turn.finalResponse);
+} catch (error) {
+  console.error("Turn aborted or failed:", error);
+}
+```
+
+### 11. Raw event debugging and fail-fast
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+const claude = new ClaudeCode();
+const session = claude.startSession({
+  rawEventLog: true,  // writes NDJSON to ./agent_logs/
+  dangerouslySkipPermissions: true,
+});
+
+const turn = await session.run("Fix the bug in auth.ts", {
+  onRawEvent(event) {
+    if (event.type === "spawn") {
+      console.log("CLI started:", event.command, event.args);
+    }
+    if (event.type === "stderr_line") {
+      console.error("[stderr]", event.line);
+    }
+    if (event.type === "exit") {
+      console.log("CLI exited:", event.code);
+    }
+  },
+  failFastOnCliApiError: true,  // abort immediately on API errors
+});
+```
+
+### 12. Custom environment and auth
+
+```typescript
+import { ClaudeCode } from "claude-code-node";
+
+// API key auth
+const claude1 = new ClaudeCode({
+  apiKey: "sk-ant-...",
+});
+
+// Bearer token auth with custom base URL (for proxies/gateways)
+const claude2 = new ClaudeCode({
+  authToken: "my-bearer-token",
+  baseUrl: "https://my-proxy.example.com",
+});
+
+// Custom CLI path and extra env vars
+const claude3 = new ClaudeCode({
+  cliPath: "/usr/local/bin/claude",
+  env: {
+    CUSTOM_VAR: "value",
+    PATH: "/usr/local/bin:/usr/bin",
+  },
+});
+```
+
+---
+
+## Error Handling
+
+### Errors from `session.run()`
+
+If the CLI process emits an `error` event during the turn, `session.run()` throws an `Error` with the error message.
+
+```typescript
+try {
+  const turn = await session.run("Do something");
+} catch (error) {
+  // error.message contains the CLI error message
+  console.error("Turn failed:", error.message);
+}
+```
+
+### Errors from `session.runStreamed()`
+
+Streaming errors are delivered through the async iterable. If an error occurs, iterating over `events` will throw.
+
+```typescript
+const { events } = await session.runStreamed("Do something");
+try {
+  for await (const event of events) {
+    if (event.type === "error") {
+      console.error("Stream error event:", event.message);
+    }
+  }
+} catch (error) {
+  console.error("Stream threw:", error.message);
+}
+```
+
+### CLI process errors
+
+If the Claude CLI binary cannot be found or the process fails to spawn, a `process_error` RawClaudeEvent is emitted and the run throws.
+
+If the CLI exits with a non-zero exit code, the SDK throws an error in the format: `"Claude CLI exited with code <N>: <stderr>"` or `"Claude CLI exited with signal <SIG>: <stderr>"`.
+
+### Fail-fast on API errors
+
+When `failFastOnCliApiError: true` is set in TurnOptions, the SDK monitors stderr and stdout for API error patterns (e.g. `API Error:`, `api_retry` system events). On detection, it:
+1. Aborts the CLI process immediately.
+2. Emits a synthesized `ErrorEvent` with the error details.
+3. For `run()`: throws the error.
+4. For `runStreamed()`: yields the error event, then the iterable ends.
+
+This is critical for CI/CD pipelines where waiting for the CLI's built-in retry logic would waste minutes.
+
+### Abort via AbortSignal
+
+Pass an `AbortSignal` via `TurnOptions.signal` to cancel a turn. The CLI process is killed and the run throws an abort error.
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 10_000);
+
+try {
+  await session.run("task", { signal: controller.signal });
+} catch (err) {
+  // AbortError
+}
+```
+
+---
+
+## Raw Event Logging
+
+When `SessionOptions.rawEventLog` is enabled, the SDK writes all `RawClaudeEvent` records as NDJSON to disk for post-mortem analysis.
+
+- `rawEventLog: true` writes to `./agent_logs/` in the current working directory.
+- `rawEventLog: "/absolute/path"` writes to the specified directory (must be an absolute path).
+
+Each line in the NDJSON file is a JSON object with:
+```json
+{ "timestamp": "2025-01-01T00:00:00.000Z", "event": { "type": "...", ... } }
+```
+
+File names follow the pattern: `claude-raw-events-<ISO-timestamp>-<PID>-<random>.ndjson`.
